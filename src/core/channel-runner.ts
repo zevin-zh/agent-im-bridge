@@ -68,6 +68,9 @@ export async function runChannel({ channelName, channelConfig, defaults }: RunCh
     ...(defaults.allowedWorkingDirectoryRoots !== undefined
       ? { allowedWorkingDirectoryRoots: defaults.allowedWorkingDirectoryRoots }
       : {}),
+    ...(defaults.messageTimestamp !== undefined
+      ? { messageTimestamp: defaults.messageTimestamp }
+      : {}),
     channelStateStore,
     agentSessionStateRegistry,
     common,

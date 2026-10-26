@@ -908,6 +908,11 @@ async function runScheduleTask(taskName: string): Promise<void> {
     ...(config.defaults.allowedWorkingDirectoryRoots !== undefined
       ? { allowedWorkingDirectoryRoots: config.defaults.allowedWorkingDirectoryRoots }
       : {}),
+    // Same as the runner: a configured timestamp prefix must bind CLI-fired
+    // runs too, so both ingress paths behave identically.
+    ...(config.defaults.messageTimestamp !== undefined
+      ? { messageTimestamp: config.defaults.messageTimestamp }
+      : {}),
     channelStateStore,
     agentSessionStateRegistry,
     common,

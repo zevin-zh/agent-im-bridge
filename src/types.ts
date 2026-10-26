@@ -496,6 +496,22 @@ export interface ChannelConfig {
   agent: AgentConfig;
 }
 
+/**
+ * Options for the optional inbound-message timestamp prefix. When enabled, the
+ * gateway prepends one `[YYYY-MM-DD HH:mm:ss]` line to every chat-originated
+ * user message before handing it to the agent, so the agent knows when the
+ * user spoke (IM payloads carry no usable wall clock). Synthetic
+ * `schedule:*` / `queue:*` prompts are never prefixed — the scheduler and
+ * queue controller own their own run timing.
+ */
+export interface MessageTimestampConfig {
+  /**
+   * IANA time zone name the clock is rendered in (for example
+   * `Asia/Shanghai`). Omitted means the host's own zone.
+   */
+  timeZone?: string;
+}
+
 export interface AppDefaults {
   agentIdleTimeoutMs: number;
   /**
@@ -504,6 +520,13 @@ export interface AppDefaults {
    * roots; when absent or empty the bridge is permissive.
    */
   allowedWorkingDirectoryRoots?: string[];
+  /**
+   * Optional inbound-message timestamp prefix (normalized form). Absent keeps
+   * the bridge from touching message text. In `config.json` the value may
+   * also be the boolean `true` (host time zone) or `false` (off); the config
+   * store normalizes those before they reach this type.
+   */
+  messageTimestamp?: MessageTimestampConfig;
 }
 
 export interface AppConfig {
@@ -521,6 +544,12 @@ export interface GatewayCoreOptions {
   agentConfig: AgentConfig["config"];
   agentIdleTimeoutMs: number;
   allowedWorkingDirectoryRoots?: string[];
+  /**
+   * Optional inbound-message timestamp prefix (see
+   * `AppDefaults.messageTimestamp`). Absent means message text reaches the
+   * agent untouched.
+   */
+  messageTimestamp?: MessageTimestampConfig;
   /**
    * Per-channel persistent document store. When omitted, an in-memory store is
    * used (no durability). When `agentSessionStateRegistry` is also provided,

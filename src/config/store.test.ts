@@ -121,6 +121,101 @@ describe("config store", () => {
     );
   });
 
+  it("keeps legacy configs working without messageTimestamp", async () => {
+    readFile.mockResolvedValueOnce(JSON.stringify({ defaults: { agentIdleTimeoutMs: 5000 } }));
+
+    const { loadConfig } = await import("./store");
+    const config = await loadConfig();
+
+    expect(config.defaults.messageTimestamp).toBeUndefined();
+    expect(config.defaults).toEqual({ agentIdleTimeoutMs: 5000 });
+  });
+
+  it("treats messageTimestamp false as off", async () => {
+    readFile.mockResolvedValueOnce(JSON.stringify({ defaults: { messageTimestamp: false } }));
+
+    const { loadConfig } = await import("./store");
+    const config = await loadConfig();
+
+    expect(config.defaults.messageTimestamp).toBeUndefined();
+  });
+
+  it("normalizes messageTimestamp true to an empty option object", async () => {
+    readFile.mockResolvedValueOnce(JSON.stringify({ defaults: { messageTimestamp: true } }));
+
+    const { loadConfig } = await import("./store");
+    const config = await loadConfig();
+
+    expect(config.defaults.messageTimestamp).toEqual({});
+  });
+
+  it("trims a configured messageTimestamp time zone", async () => {
+    readFile.mockResolvedValueOnce(
+      JSON.stringify({ defaults: { messageTimestamp: { timeZone: "  Asia/Shanghai  " } } }),
+    );
+
+    const { loadConfig } = await import("./store");
+    const config = await loadConfig();
+
+    expect(config.defaults.messageTimestamp).toEqual({ timeZone: "Asia/Shanghai" });
+  });
+
+  it("rejects a non-object, non-boolean messageTimestamp", async () => {
+    readFile.mockResolvedValueOnce(JSON.stringify({ defaults: { messageTimestamp: "yes" } }));
+
+    const { loadConfig } = await import("./store");
+    await expect(loadConfig()).rejects.toThrow(
+      "defaults.messageTimestamp must be a boolean or an object",
+    );
+  });
+
+  it("rejects an unknown messageTimestamp option", async () => {
+    readFile.mockResolvedValueOnce(
+      JSON.stringify({ defaults: { messageTimestamp: { format: "iso" } } }),
+    );
+
+    const { loadConfig } = await import("./store");
+    await expect(loadConfig()).rejects.toThrow(
+      "defaults.messageTimestamp supports only the timeZone option",
+    );
+  });
+
+  it("rejects a non-string messageTimestamp time zone", async () => {
+    readFile.mockResolvedValueOnce(
+      JSON.stringify({ defaults: { messageTimestamp: { timeZone: 8 } } }),
+    );
+
+    const { loadConfig } = await import("./store");
+    await expect(loadConfig()).rejects.toThrow(
+      "defaults.messageTimestamp.timeZone must be a non-empty string",
+    );
+  });
+
+  it("rejects a messageTimestamp time zone Intl cannot resolve", async () => {
+    readFile.mockResolvedValueOnce(
+      JSON.stringify({ defaults: { messageTimestamp: { timeZone: "Mars/Olympus_Mons" } } }),
+    );
+
+    const { loadConfig } = await import("./store");
+    await expect(loadConfig()).rejects.toThrow(
+      "defaults.messageTimestamp.timeZone is not a valid time zone: Mars/Olympus_Mons",
+    );
+  });
+
+  it("persists a configured messageTimestamp on save", async () => {
+    const { saveConfig } = await import("./store");
+
+    await saveConfig({
+      defaults: { agentIdleTimeoutMs: 5000, messageTimestamp: { timeZone: "Asia/Shanghai" } },
+    });
+
+    const [, payload] = writeFile.mock.calls[0]!;
+    expect(JSON.parse(String(payload))).toEqual({
+      channels: {},
+      defaults: { agentIdleTimeoutMs: 5000, messageTimestamp: { timeZone: "Asia/Shanghai" } },
+    });
+  });
+
   it("persists normalized allowedWorkingDirectoryRoots on save", async () => {
     const { saveConfig } = await import("./store");
 

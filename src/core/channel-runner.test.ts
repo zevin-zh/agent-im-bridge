@@ -302,6 +302,59 @@ describe("runChannel", () => {
     );
   });
 
+  it("passes defaults.messageTimestamp into the gateway core", async () => {
+    const { runChannel } = await import("./channel-runner");
+    const channelConfig: ChannelConfig = {
+      common: { language: "en-US" },
+      client: {
+        type: "wecom",
+        config: { botId: "bot-id", secret: "secret" },
+      },
+      agent: {
+        type: "pi-coding-agent",
+        config: {},
+      },
+    };
+
+    await runChannel({
+      channelName: "demo-channel",
+      channelConfig,
+      defaults: {
+        agentIdleTimeoutMs: 60_000,
+        messageTimestamp: { timeZone: "Asia/Shanghai" },
+      },
+    });
+
+    expect(gatewayCoreCtor).toHaveBeenCalledWith(
+      expect.objectContaining({ messageTimestamp: { timeZone: "Asia/Shanghai" } }),
+    );
+  });
+
+  it("omits messageTimestamp when the defaults do not configure it", async () => {
+    const { runChannel } = await import("./channel-runner");
+    const channelConfig: ChannelConfig = {
+      common: { language: "en-US" },
+      client: {
+        type: "wecom",
+        config: { botId: "bot-id", secret: "secret" },
+      },
+      agent: {
+        type: "pi-coding-agent",
+        config: {},
+      },
+    };
+
+    await runChannel({
+      channelName: "demo-channel",
+      channelConfig,
+      defaults: { agentIdleTimeoutMs: 60_000 },
+    });
+
+    expect(gatewayCoreCtor).toHaveBeenCalledWith(
+      expect.not.objectContaining({ messageTimestamp: expect.anything() }),
+    );
+  });
+
   it("starts the scheduler after the core and stops it before the core", async () => {
     const { runChannel } = await import("./channel-runner");
     const channelConfig: ChannelConfig = {
