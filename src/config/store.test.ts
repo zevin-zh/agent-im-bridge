@@ -216,6 +216,44 @@ describe("config store", () => {
     });
   });
 
+  it("keeps legacy configs working without a streaming flag", async () => {
+    readFile.mockResolvedValueOnce(JSON.stringify({ defaults: { agentIdleTimeoutMs: 5000 } }));
+
+    const { loadConfig } = await import("./store");
+    const config = await loadConfig();
+
+    expect(config.defaults.streaming).toBeUndefined();
+    expect(config.defaults).toEqual({ agentIdleTimeoutMs: 5000 });
+  });
+
+  it("keeps an explicit streaming flag from the config file", async () => {
+    readFile.mockResolvedValueOnce(JSON.stringify({ defaults: { streaming: false } }));
+
+    const { loadConfig } = await import("./store");
+    const config = await loadConfig();
+
+    expect(config.defaults.streaming).toBe(false);
+  });
+
+  it("rejects a non-boolean streaming flag", async () => {
+    readFile.mockResolvedValueOnce(JSON.stringify({ defaults: { streaming: "yes" } }));
+
+    const { loadConfig } = await import("./store");
+    await expect(loadConfig()).rejects.toThrow("defaults.streaming must be a boolean");
+  });
+
+  it("persists an explicit streaming flag on save", async () => {
+    const { saveConfig } = await import("./store");
+
+    await saveConfig({ defaults: { agentIdleTimeoutMs: 5000, streaming: true } });
+
+    const [, payload] = writeFile.mock.calls[0]!;
+    expect(JSON.parse(String(payload))).toEqual({
+      channels: {},
+      defaults: { agentIdleTimeoutMs: 5000, streaming: true },
+    });
+  });
+
   it("persists normalized allowedWorkingDirectoryRoots on save", async () => {
     const { saveConfig } = await import("./store");
 

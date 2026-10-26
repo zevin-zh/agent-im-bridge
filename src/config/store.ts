@@ -90,6 +90,21 @@ function normalizeMessageTimestamp(raw: unknown): MessageTimestampConfig | undef
   return { timeZone: trimmed };
 }
 
+/**
+ * Normalizes `defaults.streaming` from raw config input.
+ *
+ * - `undefined` stays `undefined` (streaming is on by default, and a legacy
+ *   config must not gain a new field on save)
+ * - a boolean is taken as-is
+ * - anything else is a hard config error (a typo such as `"false"` must not
+ *   silently flip the behavior in either direction)
+ */
+function normalizeStreaming(raw: unknown): boolean | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw === "boolean") return raw;
+  throw new Error("defaults.streaming must be a boolean");
+}
+
 function normalizeChannelConfig(channel: RawChannelConfig): ChannelConfig {
   if (!channel.client || !channel.agent) {
     throw new Error("Invalid channel config shape");
@@ -112,6 +127,7 @@ function mergeDefaults(config: RawAppConfig = {}): AppConfig {
     config.defaults?.allowedWorkingDirectoryRoots,
   );
   const messageTimestamp = normalizeMessageTimestamp(config.defaults?.messageTimestamp);
+  const streaming = normalizeStreaming(config.defaults?.streaming);
 
   return {
     channels,
@@ -119,6 +135,7 @@ function mergeDefaults(config: RawAppConfig = {}): AppConfig {
       agentIdleTimeoutMs: config.defaults?.agentIdleTimeoutMs ?? DEFAULTS.agentIdleTimeoutMs,
       ...(allowedWorkingDirectoryRoots !== undefined ? { allowedWorkingDirectoryRoots } : {}),
       ...(messageTimestamp !== undefined ? { messageTimestamp } : {}),
+      ...(streaming !== undefined ? { streaming } : {}),
     },
   };
 }

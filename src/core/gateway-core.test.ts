@@ -64,6 +64,14 @@ class FakeIMAdapter implements IMAdapter {
   }
 }
 
+/**
+ * Streaming-capable IM adapter: same contract plus the optional capability bit
+ * that makes the core forward `assistant.delta` / `agent.run.settled`.
+ */
+class StreamingFakeIMAdapter extends FakeIMAdapter {
+  readonly supportsStreaming = true;
+}
+
 class FakeAgentAdapter implements AgentAdapter {
   readonly inputs: AgentInputEvent[] = [];
   readonly outputs: AgentOutputEvent[] = [];
@@ -4317,6 +4325,112 @@ describe("GatewayCore", () => {
     await createdAdapters[0]!.emitAssistant("still alive");
     await waitFor(() => {
       expect(imAdapter.outputs.some((event) => event.text === "still alive")).toBe(true);
+    });
+  });
+
+  describe("streaming negotiation", () => {
+    async function startSession(core: GatewayCore, imAdapter: FakeIMAdapter): Promise<void> {
+      await core.start();
+      await imAdapter.emit({
+        type: "user.message",
+        clientSessionId: "client-1",
+        text: "hello",
+      });
+    }
+
+    it("forwards assistant.delta and agent.run.settled to a streaming adapter", async () => {
+      const imAdapter = new StreamingFakeIMAdapter();
+      const createdAdapters: FakeAgentAdapter[] = [];
+      const core = new GatewayCore({
+        imAdapter,
+        agentModule: makeFakeModule({ createdAdapters }),
+        agentConfig: {},
+        agentIdleTimeoutMs: 60_000,
+      });
+      running.push(core);
+      await startSession(core, imAdapter);
+      await waitFor(() => {
+        expect(createdAdapters).toHaveLength(1);
+      });
+
+      const agentSessionId = createdAdapters[0]!.agentSessionId;
+      await createdAdapters[0]!.emit({ type: "assistant.delta", agentSessionId, text: "partial" });
+      await createdAdapters[0]!.emit({ type: "agent.run.settled", agentSessionId, aborted: false });
+
+      await waitFor(() => {
+        expect(imAdapter.outputs).toContainEqual({
+          type: "assistant.delta",
+          clientSessionId: "client-1",
+          agentSessionId,
+          text: "partial",
+        });
+        expect(imAdapter.outputs).toContainEqual({
+          type: "agent.run.settled",
+          clientSessionId: "client-1",
+          agentSessionId,
+          aborted: false,
+        });
+      });
+    });
+
+    it("drops streaming events for adapters without the capability", async () => {
+      const imAdapter = new FakeIMAdapter();
+      const createdAdapters: FakeAgentAdapter[] = [];
+      const core = new GatewayCore({
+        imAdapter,
+        agentModule: makeFakeModule({ createdAdapters }),
+        agentConfig: {},
+        agentIdleTimeoutMs: 60_000,
+      });
+      running.push(core);
+      await startSession(core, imAdapter);
+      await waitFor(() => {
+        expect(createdAdapters).toHaveLength(1);
+      });
+
+      const agentSessionId = createdAdapters[0]!.agentSessionId;
+      await createdAdapters[0]!.emit({ type: "assistant.delta", agentSessionId, text: "partial" });
+      await createdAdapters[0]!.emit({ type: "agent.run.settled", agentSessionId });
+      await createdAdapters[0]!.emitAssistant("final answer");
+
+      await waitFor(() => {
+        expect(imAdapter.outputs).toContainEqual({
+          type: "assistant.message",
+          clientSessionId: "client-1",
+          text: "final answer",
+          attachments: undefined,
+        });
+      });
+      expect(imAdapter.outputs.some((event) => event.type === "assistant.delta")).toBe(false);
+      expect(imAdapter.outputs.some((event) => event.type === "agent.run.settled")).toBe(false);
+    });
+
+    it("drops streaming events when defaults.streaming is false", async () => {
+      const imAdapter = new StreamingFakeIMAdapter();
+      const createdAdapters: FakeAgentAdapter[] = [];
+      const core = new GatewayCore({
+        imAdapter,
+        agentModule: makeFakeModule({ createdAdapters }),
+        agentConfig: {},
+        agentIdleTimeoutMs: 60_000,
+        streaming: false,
+      });
+      running.push(core);
+      await startSession(core, imAdapter);
+      await waitFor(() => {
+        expect(createdAdapters).toHaveLength(1);
+      });
+
+      const agentSessionId = createdAdapters[0]!.agentSessionId;
+      await createdAdapters[0]!.emit({ type: "assistant.delta", agentSessionId, text: "partial" });
+      await createdAdapters[0]!.emit({ type: "agent.run.settled", agentSessionId });
+      await createdAdapters[0]!.emitAssistant("final answer");
+
+      await waitFor(() => {
+        expect(imAdapter.outputs.some((event) => event.type === "assistant.message")).toBe(true);
+      });
+      expect(imAdapter.outputs.some((event) => event.type === "assistant.delta")).toBe(false);
+      expect(imAdapter.outputs.some((event) => event.type === "agent.run.settled")).toBe(false);
     });
   });
 });

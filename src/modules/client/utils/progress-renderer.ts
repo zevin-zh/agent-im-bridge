@@ -60,9 +60,18 @@ export class ProgressRenderer {
     this.#t = options.t ?? getTranslator("en-US");
   }
 
-  /** Whether `event` should be recorded as progress (excludes assistant messages and thinking). */
+  /**
+   * Whether `event` should be recorded as progress (excludes assistant messages,
+   * thinking, streaming deltas and run settlement — those are answer content,
+   * not progress lines).
+   */
   isProgressEvent(event: ClientInputEvent): event is ProgressEvent {
-    return event.type !== "assistant.message" && event.type !== "assistant.thinking";
+    return (
+      event.type !== "assistant.message" &&
+      event.type !== "assistant.thinking" &&
+      event.type !== "assistant.delta" &&
+      event.type !== "agent.run.settled"
+    );
   }
 
   /** Records a progress event, formatting it into a line and collapsing older lines if needed. */

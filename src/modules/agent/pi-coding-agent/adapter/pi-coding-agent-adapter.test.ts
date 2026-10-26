@@ -751,6 +751,75 @@ describe("PiCodingAgentAdapter", () => {
 
     expect(outputs).toEqual([]);
   });
+
+  it("streams cumulative text from message_update deltas and commits the final frame", async () => {
+    const adapter = new PiCodingAgentAdapter({ agentSessionId: "agent-1", mode: "create", sessionState: createFakeHandle() });
+    const outputs: AgentOutputEvent[] = [];
+
+    await adapter.start((event) => {
+      outputs.push(event);
+    });
+
+    const emit = rpcClients[0]!.emit;
+    emit({ type: "message_start", message: { role: "assistant", content: [] } });
+    emit({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "Hello " },
+    });
+
+    await vi.waitFor(() => {
+      expect(outputs.filter((event) => event.type === "assistant.delta")).toHaveLength(1);
+    });
+    expect(outputs[0]).toEqual({ type: "assistant.delta", agentSessionId: "agent-1", text: "Hello " });
+
+    emit({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "world" },
+    });
+    emit({
+      type: "message_end",
+      message: { role: "assistant", content: [{ type: "text", text: "Hello world" }] },
+    });
+
+    await vi.waitFor(() => {
+      expect(outputs.at(-1)).toEqual({
+        type: "assistant.message",
+        agentSessionId: "agent-1",
+        text: "Hello world",
+        attachments: [],
+      });
+    });
+    // Delta frames always carry the whole run text; the last one is authoritative.
+    const deltaTexts = outputs
+      .filter((event): event is Extract<AgentOutputEvent, { type: "assistant.delta" }> => event.type === "assistant.delta")
+      .map((event) => event.text);
+    expect(deltaTexts.at(-1)).toBe("Hello world");
+
+    await adapter.stop();
+  });
+
+  it("reports agent.run.settled so streaming clients can close the in-place bubble", async () => {
+    const adapter = new PiCodingAgentAdapter({ agentSessionId: "agent-1", mode: "create", sessionState: createFakeHandle() });
+    const outputs: AgentOutputEvent[] = [];
+
+    await adapter.start((event) => {
+      outputs.push(event);
+    });
+
+    const emit = rpcClients[0]!.emit;
+    emit({ type: "agent_start" });
+    emit({ type: "agent_settled", aborted: true });
+
+    await vi.waitFor(() => {
+      expect(outputs).toContainEqual({
+        type: "agent.run.settled",
+        agentSessionId: "agent-1",
+        aborted: true,
+      });
+    });
+
+    await adapter.stop();
+  });
 });
 
 describe("PiCodingAgentAdapter session working directory state", () => {
