@@ -1,8 +1,15 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { AppConfig, ChannelConfig, ChannelCommonConfig, LocaleCode } from "../types";
+import type {
+  AppConfig,
+  ChannelConfig,
+  ChannelCommonConfig,
+  LocaleCode,
+  MessageTimestampConfig,
+} from "../types";
 import { DEFAULT_LOCALE } from "../i18n";
+import { isValidTimeZone } from "../modules/shared/message-timestamp";
 import { DEFAULTS } from "./defaults";
 
 const CONFIG_DIR = path.join(os.homedir(), ".config", "agent-bridge");
@@ -51,6 +58,38 @@ function normalizeAllowedWorkingDirectoryRoots(raw: unknown): string[] | undefin
   return roots;
 }
 
+/**
+ * Normalizes `defaults.messageTimestamp` from raw config input.
+ *
+ * - `undefined` and `false` stay `undefined` (the feature is opt-in, and a
+ *   legacy config must not gain a new field on save)
+ * - `true` enables the prefix with the host time zone
+ * - an object may only carry `timeZone`; an unknown key or a non-string
+ *   value is a hard config error, and so is a zone `Intl` cannot resolve
+ *   (a typo must not silently fall back to the host zone and mislabel times)
+ */
+function normalizeMessageTimestamp(raw: unknown): MessageTimestampConfig | undefined {
+  if (raw === undefined || raw === false) return undefined;
+  if (raw === true) return {};
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("defaults.messageTimestamp must be a boolean or an object");
+  }
+
+  const { timeZone, ...rest } = raw as Record<string, unknown>;
+  if (Object.keys(rest).length > 0) {
+    throw new Error("defaults.messageTimestamp supports only the timeZone option");
+  }
+  if (timeZone === undefined) return {};
+  if (typeof timeZone !== "string" || timeZone.trim() === "") {
+    throw new Error("defaults.messageTimestamp.timeZone must be a non-empty string");
+  }
+  const trimmed = timeZone.trim();
+  if (!isValidTimeZone(trimmed)) {
+    throw new Error(`defaults.messageTimestamp.timeZone is not a valid time zone: ${trimmed}`);
+  }
+  return { timeZone: trimmed };
+}
+
 function normalizeChannelConfig(channel: RawChannelConfig): ChannelConfig {
   if (!channel.client || !channel.agent) {
     throw new Error("Invalid channel config shape");
@@ -72,12 +111,14 @@ function mergeDefaults(config: RawAppConfig = {}): AppConfig {
   const allowedWorkingDirectoryRoots = normalizeAllowedWorkingDirectoryRoots(
     config.defaults?.allowedWorkingDirectoryRoots,
   );
+  const messageTimestamp = normalizeMessageTimestamp(config.defaults?.messageTimestamp);
 
   return {
     channels,
     defaults: {
       agentIdleTimeoutMs: config.defaults?.agentIdleTimeoutMs ?? DEFAULTS.agentIdleTimeoutMs,
       ...(allowedWorkingDirectoryRoots !== undefined ? { allowedWorkingDirectoryRoots } : {}),
+      ...(messageTimestamp !== undefined ? { messageTimestamp } : {}),
     },
   };
 }

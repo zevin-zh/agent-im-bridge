@@ -9,12 +9,14 @@ import type {
   ClientWorkingDirectorySource,
   GatewayCoreOptions,
   IngressResult,
+  MessageTimestampConfig,
 } from "../types";
 import { createAgentSessionStateRegistry } from "../config/agent-session-state";
 import { createInMemoryChannelStateStore } from "../config/channel-state";
 import { SYNTHETIC_SESSION_PREFIX } from "../modules/schedule/scheduler";
 import { QUEUE_SESSION_PREFIX } from "../modules/queue/queue-file";
 import { getTranslatorForCommon, type Translator } from "../i18n";
+import { withMessageTimestampPrefix } from "../modules/shared/message-timestamp";
 import { createLogger, type Logger } from "./logger";
 
 /**
@@ -63,6 +65,13 @@ export class GatewayCore {
   readonly #agentConfig: GatewayCoreOptions["agentConfig"];
   readonly #agentIdleTimeoutMs: number;
   readonly #allowedWorkingDirectoryRoots?: string[];
+  /**
+   * Optional inbound-message timestamp prefix (see
+   * `AppDefaults.messageTimestamp`). `undefined` leaves message text
+   * untouched; the clock is read per message, so a long-lived channel never
+   * stamps a stale time.
+   */
+  readonly #messageTimestamp?: MessageTimestampConfig;
   readonly #channelStateStore: NonNullable<GatewayCoreOptions["channelStateStore"]>;
   readonly #agentSessionStateRegistry: NonNullable<GatewayCoreOptions["agentSessionStateRegistry"]>;
   readonly #common?: ChannelCommonContext;
@@ -96,6 +105,7 @@ export class GatewayCore {
     agentConfig,
     agentIdleTimeoutMs,
     allowedWorkingDirectoryRoots,
+    messageTimestamp,
     channelStateStore,
     agentSessionStateRegistry,
     common,
@@ -107,6 +117,7 @@ export class GatewayCore {
     this.#agentConfig = agentConfig;
     this.#agentIdleTimeoutMs = agentIdleTimeoutMs;
     this.#allowedWorkingDirectoryRoots = allowedWorkingDirectoryRoots;
+    this.#messageTimestamp = messageTimestamp;
     this.#channelStateStore = channelStateStore ?? createInMemoryChannelStateStore();
     this.#agentSessionStateRegistry =
       agentSessionStateRegistry ?? createAgentSessionStateRegistry(this.#channelStateStore);
@@ -299,8 +310,22 @@ export class GatewayCore {
     this.#touchRuntime(runtime);
     await runtime.agentAdapter.input({
       type: "user.message",
-      text,
+      text: this.#stampMessageText(text, clientSessionId),
     });
+  }
+
+  /**
+   * Applies the optional inbound-message timestamp prefix
+   * (`defaults.messageTimestamp`). Synthetic `schedule:*` / `queue:*`
+   * prompts are skipped: the scheduler and queue controller compose those
+   * themselves, and a timestamp in front of their completion protocol would
+   * be noise the agent never asked for. The prefix only ever adds one line —
+   * the user's own text is delivered verbatim after it.
+   */
+  #stampMessageText(text: string, clientSessionId: string): string {
+    if (this.#messageTimestamp === undefined) return text;
+    if (this.#isSyntheticClientSession(clientSessionId)) return text;
+    return withMessageTimestampPrefix(text, new Date(), this.#messageTimestamp.timeZone);
   }
 
   async #handleSessionCompact(clientSessionId: string): Promise<void> {

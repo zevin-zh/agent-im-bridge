@@ -122,6 +122,30 @@ When configured, user-originated `/new <path>` targets (including remembered def
 
 The bridge also releases agent sessions that are idle: a session whose last observable activity is older than `defaults.agentIdleTimeoutMs` (default `24h`) is stopped and released. The idle timer is pure inactivity — it tracks the last run event and reschedules whenever one arrives; there is no busy check. The agent adapters defend themselves internally (an `abort()` when there is no active turn is a no-op), and `/model` performs no busy gating.
 
+## Prefix incoming messages with a timestamp
+
+Some agents benefit from seeing when a message was sent. Set `defaults.messageTimestamp` to have the bridge prepend one `[YYYY-MM-DD HH:mm:ss]` line to every user message that reaches the agent:
+
+```json
+{
+  "defaults": {
+    "messageTimestamp": true
+  }
+}
+```
+
+The clock is read when the message arrives, so a long-lived channel never stamps stale times. Add `timeZone` (any IANA name) to pin the zone — without it the host's local zone is used:
+
+```json
+{
+  "defaults": {
+    "messageTimestamp": { "timeZone": "Asia/Shanghai" }
+  }
+}
+```
+
+Only text typed by a person in the IM app is stamped. Prompts injected by scheduled tasks and event queues are left untouched, because their bodies (including the `BRIDGE_TASK_STATUS_DONE` marker) are part of the completion protocol. The setting is off by default; `false` is the same as omitting it. Note that pi already records a millisecond timestamp on every message, so this option exists to make the time visible to the model in the message body itself, not to add information the agent adapter lacks.
+
 ## Development
 
 ```bash

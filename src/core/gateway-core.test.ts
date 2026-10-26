@@ -518,6 +518,95 @@ describe("GatewayCore", () => {
     });
   });
 
+  it("delivers chat text untouched when defaults.messageTimestamp is not configured", async () => {
+    const imAdapter = new FakeIMAdapter();
+    const createdAdapters: FakeAgentAdapter[] = [];
+    const core = new GatewayCore({
+      imAdapter,
+      agentModule: makeFakeModule({ createdAdapters }),
+      agentConfig: {},
+      agentIdleTimeoutMs: 60_000,
+    });
+    running.push(core);
+    await core.start();
+
+    await imAdapter.emit({
+      type: "user.message",
+      clientSessionId: "client-1",
+      text: "  plain text  ",
+    });
+
+    await waitFor(() => {
+      expect(createdAdapters[0]?.inputs).toEqual([{ type: "user.message", text: "  plain text  " }]);
+    });
+  });
+
+  it("prefixes chat text with one bracketed timestamp line when configured", async () => {
+    const imAdapter = new FakeIMAdapter();
+    const createdAdapters: FakeAgentAdapter[] = [];
+    const core = new GatewayCore({
+      imAdapter,
+      agentModule: makeFakeModule({ createdAdapters }),
+      agentConfig: {},
+      agentIdleTimeoutMs: 60_000,
+      messageTimestamp: { timeZone: "UTC" },
+    });
+    running.push(core);
+    await core.start();
+
+    await imAdapter.emit({
+      type: "user.message",
+      clientSessionId: "client-1",
+      text: "hello",
+    });
+
+    await waitFor(() => {
+      const inputs = createdAdapters[0]!.inputs;
+      expect(inputs).toHaveLength(1);
+      const event = inputs[0]!;
+      expect(event.type).toBe("user.message");
+      // One `[YYYY-MM-DD HH:mm:ss]` line, then the user's text verbatim.
+      expect("text" in event ? event.text : "").toMatch(
+        /^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]\nhello$/,
+      );
+    });
+  });
+
+  it("never prefixes synthetic schedule or queue prompts", async () => {
+    const imAdapter = new FakeIMAdapter();
+    const createdAdapters: FakeAgentAdapter[] = [];
+    const core = new GatewayCore({
+      imAdapter,
+      agentModule: makeFakeModule({ createdAdapters }),
+      agentConfig: {},
+      agentIdleTimeoutMs: 60_000,
+      messageTimestamp: { timeZone: "UTC" },
+    });
+    running.push(core);
+    await core.start();
+
+    // The scheduler always dispatches session.new first; the follow-up
+    // user.message carries the task prompt and must reach the agent
+    // unstamped, because the completion protocol owns that text.
+    await core.input({
+      type: "command.session.new",
+      clientSessionId: "schedule:report:1",
+      workingDirectory: "/tmp/project-a",
+      workingDirectorySource: "default",
+    });
+    await core.input({
+      type: "user.message",
+      clientSessionId: "schedule:report:1",
+      text: "produce the report",
+    });
+
+    await waitFor(() => {
+      expect(createdAdapters[0]?.inputs).toEqual([
+        { type: "user.message", text: "produce the report" },
+      ]);
+    });
+  });
+
   it("localizes fixed gateway messages with the configured channel language", async () => {
     const imAdapter = new FakeIMAdapter();
 
