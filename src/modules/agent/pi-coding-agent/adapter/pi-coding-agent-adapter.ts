@@ -17,6 +17,16 @@ import { locatePiSession } from "./session-locator";
 import { resolveWorkingDirectory } from "../working-directory";
 import type { PiCodingAgentSessionStateV1 } from "../index";
 
+/**
+ * Minimum spacing between two `assistant.delta` emissions. The enterprise
+ * WeCom SDK serializes `replyStream` calls behind a 5s ack timeout and the
+ * server accepts the same stream id once per reply, so a faster cadence buys
+ * nothing but queue pressure. Text is never lost: every emission carries the
+ * full run text, and a final authoritative emission is forced at
+ * `message_end`, so a dropped intermediate frame is invisible.
+ */
+const DELTA_MIN_INTERVAL_MS = 600;
+
 class PiModelCommandError extends Error {
   readonly kind: "agent.model.invalid" | "agent.model.set.unavailable";
 
@@ -161,6 +171,20 @@ export class PiCodingAgentAdapter implements AgentAdapter {
   #sessionFile: string | undefined;
   #toolLabelByCallId = new Map<string, string>();
   #toolInputByCallId = new Map<string, unknown>();
+  /**
+   * Visible text of assistant messages already finished in the current run.
+   * Streaming deltas are cumulative *for the run* (not for one message), so a
+   * client can render one growing bubble across the several assistant
+   * messages Pi produces when tools are used, without tracking message
+   * boundaries itself.
+   */
+  #runTextCommitted = "";
+  /** Text of the assistant message currently streaming. */
+  #deltaText = "";
+  #deltaTimer: ReturnType<typeof setTimeout> | null = null;
+  #deltaLastEmitAt = 0;
+  /** Whether any delta frame was emitted for the current run. */
+  #streamedThisRun = false;
 
   constructor(options: PiCodingAgentAdapterOptions) {
     this.#agentSessionId = options.agentSessionId;
@@ -197,6 +221,7 @@ export class PiCodingAgentAdapter implements AgentAdapter {
 
   async start(onOutput: (event: AgentOutputEvent) => Promise<void> | void): Promise<void> {
     this.#onOutput = onOutput;
+    this.#resetDeltaState();
 
     // Resolve and persist the session working directory before anything can
     // spawn: creation failures (missing/invalid/unallowed path, revoke) must
@@ -336,6 +361,7 @@ export class PiCodingAgentAdapter implements AgentAdapter {
     await this.#client?.stop();
     this.#client = null;
     this.#activeRun = false;
+    this.#resetDeltaState();
     this.#onOutput = null;
     if (this.#claimedSessionFile !== null) {
       if (occupiedSessionFiles.get(this.#claimedSessionFile) === this.#agentSessionId) {
@@ -516,6 +542,67 @@ export class PiCodingAgentAdapter implements AgentAdapter {
     await this.#onOutput(event);
   }
 
+  /**
+   * Appends `delta` to the in-progress text and schedules a throttled
+   * emission. Intermediate frames carry the whole run text so far.
+   */
+  #appendDelta(delta: string): void {
+    this.#deltaText += delta;
+    this.#scheduleDeltaFlush();
+  }
+
+  #scheduleDeltaFlush(): void {
+    if (this.#deltaTimer || !this.#onOutput) return;
+    const wait = Math.max(0, DELTA_MIN_INTERVAL_MS - (Date.now() - this.#deltaLastEmitAt));
+    this.#deltaTimer = setTimeout(() => {
+      this.#deltaTimer = null;
+      void this.#flushDelta();
+    }, wait);
+  }
+
+  async #flushDelta(): Promise<void> {
+    if (!this.#onOutput) return;
+    const text = this.#runTextCommitted + this.#deltaText;
+    if (text.length === 0) return;
+    this.#deltaLastEmitAt = Date.now();
+    this.#streamedThisRun = true;
+    await this.#emitProgress({
+      type: "assistant.delta",
+      agentSessionId: this.#agentSessionId,
+      text,
+    });
+  }
+
+  /**
+   * Promotes the finished message text into the run text and emits the
+   * authoritative frame for it. `text` is already free of MEDIA: markers, so
+   * the stream never shows a delivery directive the user should not see.
+   * Awaited before the completion event so ordering is deterministic.
+   */
+  async #commitAssistantText(text: string): Promise<void> {
+    this.#cancelDeltaFlush();
+    this.#deltaText = "";
+    if (text.length > 0) {
+      this.#runTextCommitted += (this.#runTextCommitted.length > 0 ? "\n\n" : "") + text;
+    }
+    await this.#flushDelta();
+  }
+
+  #cancelDeltaFlush(): void {
+    if (!this.#deltaTimer) return;
+    clearTimeout(this.#deltaTimer);
+    this.#deltaTimer = null;
+  }
+
+  /** Drops all streaming state (new run, settled run, or shutdown). */
+  #resetDeltaState(): void {
+    this.#cancelDeltaFlush();
+    this.#deltaText = "";
+    this.#runTextCommitted = "";
+    this.#deltaLastEmitAt = 0;
+    this.#streamedThisRun = false;
+  }
+
   async #emitRunFailed(detail: string): Promise<void> {
     await this.#emitProgress({
       type: "error",
@@ -532,6 +619,7 @@ export class PiCodingAgentAdapter implements AgentAdapter {
 
     if (rpcEvent.type === "agent_start") {
       this.#activeRun = true;
+      this.#resetDeltaState();
       return;
     }
 
@@ -539,6 +627,42 @@ export class PiCodingAgentAdapter implements AgentAdapter {
       this.#activeRun = false;
       this.#toolLabelByCallId.clear();
       this.#toolInputByCallId.clear();
+      this.#resetDeltaState();
+      // `agent_settled` (not `agent_end`) is the authoritative "Pi will not
+      // continue on its own" signal: retries, overflow recovery, compaction
+      // retry, steering and follow-up may all still run after `agent_end`.
+      // Streaming clients close their in-place bubble here.
+      await this.#emitProgress({
+        type: "agent.run.settled",
+        agentSessionId: this.#agentSessionId,
+        aborted: rpcEvent.aborted === true,
+      });
+      return;
+    }
+
+    if (rpcEvent.type === "message_start") {
+      const message = rpcEvent.message;
+      if (this.#isAssistantMessage(message)) {
+        // A new assistant message starts: drop the partial text of the
+        // previous block but keep the text already committed for this run.
+        this.#cancelDeltaFlush();
+        this.#deltaText = "";
+      }
+      return;
+    }
+
+    if (rpcEvent.type === "message_update") {
+      const assistantMessageEvent = rpcEvent.assistantMessageEvent;
+      if (
+        assistantMessageEvent !== null &&
+        typeof assistantMessageEvent === "object" &&
+        (assistantMessageEvent as { type?: unknown }).type === "text_delta"
+      ) {
+        const delta = (assistantMessageEvent as { delta?: unknown }).delta;
+        if (typeof delta === "string" && delta.length > 0) {
+          this.#appendDelta(delta);
+        }
+      }
       return;
     }
 
@@ -575,6 +699,16 @@ export class PiCodingAgentAdapter implements AgentAdapter {
             `ignoring assistant message_end without visible content (session=${this.#agentSessionId})`,
           );
           return;
+        }
+        // Close the in-place bubble with the authoritative text (delta-only
+        // wire frames are never trusted as the final content), then report
+        // the completed message. Ordering matters: the streaming frame must
+        // land before the completion event so a client that appends the
+        // completed message never sees it duplicated or out of order. Runs
+        // that never streamed skip the commit entirely, so a plain
+        // non-streaming turn keeps its original single-event behavior.
+        if (this.#streamedThisRun || this.#deltaText.length > 0) {
+          await this.#commitAssistantText(text);
         }
         await this.#emitAssistant(text, attachments);
       }

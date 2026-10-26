@@ -71,6 +71,7 @@ export async function runChannel({ channelName, channelConfig, defaults }: RunCh
     ...(defaults.messageTimestamp !== undefined
       ? { messageTimestamp: defaults.messageTimestamp }
       : {}),
+    ...(defaults.streaming !== undefined ? { streaming: defaults.streaming } : {}),
     channelStateStore,
     agentSessionStateRegistry,
     common,

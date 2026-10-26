@@ -132,6 +132,26 @@ type AgentOutputPayload =
       text?: string;
     }
   | {
+      /**
+       * Cumulative visible text of the assistant message currently being
+       * generated. Every event carries the full text so far (never a patch),
+       * so a consumer that drops intermediate frames still renders correctly
+       * from the next one. Only emitted by agents that support streaming and
+       * only forwarded to clients that advertise `IMAdapter.supportsStreaming`.
+       */
+      type: "assistant.delta";
+      text: string;
+    }
+  | {
+      /**
+       * The agent run is settled: Pi will not continue on its own (no retry,
+       * overflow recovery, compaction retry, steering or follow-up pending).
+       * Late by design — `agent_end` is not the end of the run.
+       */
+      type: "agent.run.settled";
+      aborted?: boolean;
+    }
+  | {
       type: "agent.status.info";
       status: AgentSessionStatus;
     }
@@ -192,6 +212,14 @@ export interface IMAdapter {
   stop(): Promise<void>;
   input(event: ClientInputEvent): Promise<void>;
   isBusy(): Promise<boolean>;
+  /**
+   * Capability flag: `true` means the adapter can render `assistant.delta`
+   * events in place (one growing bubble) and `agent.run.settled` as the
+   * "stop updating" signal. Absent/false means the core never sends those
+   * events, so the adapter only ever sees completed `assistant.message`s and
+   * no adapter has to implement delta buffering it cannot use.
+   */
+  readonly supportsStreaming?: boolean;
 }
 
 export interface AgentAdapter {
@@ -527,6 +555,13 @@ export interface AppDefaults {
    * store normalizes those before they reach this type.
    */
   messageTimestamp?: MessageTimestampConfig;
+  /**
+   * Optional switch for incremental (`assistant.delta`) rendering. Absent
+   * means enabled: an adapter that does not advertise `supportsStreaming` is
+   * unaffected either way. Set to `false` to force one completed message per
+   * assistant turn even on streaming-capable clients.
+   */
+  streaming?: boolean;
 }
 
 export interface AppConfig {
@@ -550,6 +585,11 @@ export interface GatewayCoreOptions {
    * agent untouched.
    */
   messageTimestamp?: MessageTimestampConfig;
+  /**
+   * Optional streaming switch (see `AppDefaults.streaming`). Absent means
+   * enabled.
+   */
+  streaming?: boolean;
   /**
    * Per-channel persistent document store. When omitted, an in-memory store is
    * used (no durability). When `agentSessionStateRegistry` is also provided,

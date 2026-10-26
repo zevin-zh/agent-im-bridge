@@ -37,11 +37,72 @@ import { WecomClient } from "./wecom-client";
 import { buildWecomSessionId, parseWecomSessionId } from "./wecom-session";
 
 const MAX_TEXT_CHUNK = 4000;
+/**
+ * WeCom caps a single streamed reply at 20480 bytes and `stream.content` is
+ * overwrite-by-design (every frame carries the whole body), so the in-place
+ * bubble body must stay under that ceiling. Budgeted in bytes because a CJK
+ * character costs three of them.
+ */
+const MAX_STREAM_BODY_BYTES = 16000;
+
+// Display-only twin of the marker pattern in `media-convention.ts`: the delta
+// stream may cut a `MEDIA:` marker in half, and files may not exist yet, so
+// this strips markers for the bubble without trying to resolve them.
+const STREAM_MEDIA_MARKER_RE =
+  /[`"']?MEDIA:\s*(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~\/|\/|[A-Za-z]:[/\\])[^\s`"']+\.\w+)[`"']?/gi;
+const STREAM_MEDIA_PARTIAL_TAIL_RE = /[`"']?MEDIA:[\s\S]*$/i;
 
 type ProgressState = {
   renderer: ProgressRenderer;
   announced: boolean;
+  /**
+   * True once this turn started rendering streaming answer text into the
+   * bubble. Only then is the trailing `assistant.message` treated as
+   * already-delivered content instead of a fresh chat message.
+   */
+  streaming: boolean;
+  /** Answer text already rendered into the bubble (cumulative for the run). */
+  answerText: string;
 };
+
+/** Strips `MEDIA:` directives (including a half-received trailing one) for display. */
+function stripStreamMediaMarkers(text: string): string {
+  return text.replace(STREAM_MEDIA_MARKER_RE, "").replace(STREAM_MEDIA_PARTIAL_TAIL_RE, "").trim();
+}
+
+/** Keeps a streamed body under the byte ceiling, preserving both ends of long answers. */
+function clampStreamBody(body: string): string {
+  if (Buffer.byteLength(body, "utf8") <= MAX_STREAM_BODY_BYTES) {
+    return body;
+  }
+
+  const chars = [...body];
+  const separator = "\n\n…\n\n";
+  const separatorBytes = Buffer.byteLength(separator, "utf8");
+  const headBudget = Math.floor(MAX_STREAM_BODY_BYTES * 0.35);
+
+  let head = "";
+  let headBytes = 0;
+  for (const char of chars) {
+    const bytes = Buffer.byteLength(char, "utf8");
+    if (headBytes + bytes > headBudget) break;
+    head += char;
+    headBytes += bytes;
+  }
+
+  let tail = "";
+  let tailBytes = 0;
+  const tailBudget = MAX_STREAM_BODY_BYTES - headBytes - separatorBytes;
+  for (let index = chars.length - 1; index >= 0; index--) {
+    const char = chars[index];
+    const bytes = Buffer.byteLength(char, "utf8");
+    if (tailBytes + bytes > tailBudget) break;
+    tail = char + tail;
+    tailBytes += bytes;
+  }
+
+  return `${head}${separator}${tail}`;
+}
 
 function chunkText(text: string, maxLen: number): string[] {
   if (text.length <= maxLen) return [text];
@@ -74,6 +135,13 @@ function chunkText(text: string, maxLen: number): string[] {
 }
 
 export class WecomIMAdapter implements IMAdapter {
+  /**
+   * WeCom bots support an in-place streamed reply (one bubble per inbound
+   * message), so the core may forward `assistant.delta` / `agent.run.settled`
+   * to this adapter.
+   */
+  readonly supportsStreaming = true;
+
   readonly #config: WecomClientConfig;
   readonly #logger: Logger;
   readonly #t: Translator;
@@ -274,10 +342,25 @@ export class WecomIMAdapter implements IMAdapter {
         try {
           const target = parseWecomSessionId(event.clientSessionId);
 
+          if (event.type === "assistant.delta") {
+            const replyToMessageId = this.#lastInboundMessageIdBySession.get(event.clientSessionId);
+            await this.#handleDeltaEvent(target.chatId, event, replyToMessageId);
+            continue;
+          }
+
+          if (event.type === "agent.run.settled") {
+            // Authoritative "the agent will not continue on its own" signal:
+            // close the in-place bubble here, never at `assistant.message`
+            // (retries, compaction and follow-ups may still produce text).
+            const replyToMessageId = this.#lastInboundMessageIdBySession.get(event.clientSessionId);
+            await this.#finishProgressMessage(target.chatId, event.clientSessionId, replyToMessageId);
+            continue;
+          }
+
           if (event.type !== "assistant.message") {
             const statusMarkdown = renderStatusMarkdown(event, this.#t);
             if (statusMarkdown) {
-const replyToMessageId = this.#lastInboundMessageIdBySession.get(event.clientSessionId);
+              const replyToMessageId = this.#lastInboundMessageIdBySession.get(event.clientSessionId);
               if (isTerminalAgentError(event) || isCompletedCommandResponse(event)) {
                 await this.#finishProgressMessage(target.chatId, event.clientSessionId, replyToMessageId);
               }
@@ -290,11 +373,16 @@ const replyToMessageId = this.#lastInboundMessageIdBySession.get(event.clientSes
           }
 
           const replyToMessageId = this.#lastInboundMessageIdBySession.get(event.clientSessionId);
-          await this.#finishProgressMessage(target.chatId, event.clientSessionId, replyToMessageId);
-          if (event.text.trim().length > 0) {
-            const chunks = chunkText(event.text, MAX_TEXT_CHUNK);
-            for (const [index, chunk] of chunks.entries()) {
-              await this.#client.sendText(target.chatId, chunk, index === 0 ? replyToMessageId : undefined);
+          // When the answer already streamed into the bubble, the completion
+          // event must not repeat it; only attachments still need delivery.
+          const streamedInPlace = this.#progressStateBySession.get(event.clientSessionId)?.streaming === true;
+          if (!streamedInPlace) {
+            await this.#finishProgressMessage(target.chatId, event.clientSessionId, replyToMessageId);
+            if (event.text.trim().length > 0) {
+              const chunks = chunkText(event.text, MAX_TEXT_CHUNK);
+              for (const [index, chunk] of chunks.entries()) {
+                await this.#client.sendText(target.chatId, chunk, index === 0 ? replyToMessageId : undefined);
+              }
             }
           }
           for (const attachment of event.attachments ?? []) {
@@ -344,6 +432,8 @@ const replyToMessageId = this.#lastInboundMessageIdBySession.get(event.clientSes
     const state = this.#progressStateBySession.get(event.clientSessionId) ?? {
       renderer: new ProgressRenderer({ t: this.#t }),
       announced: false,
+      streaming: false,
+      answerText: "",
     };
     this.#progressStateBySession.set(event.clientSessionId, state);
 
@@ -374,8 +464,7 @@ const replyToMessageId = this.#lastInboundMessageIdBySession.get(event.clientSes
     }
     this.#progressStateBySession.delete(clientSessionId);
 
-    const progress = state.renderer.getCurrentProgress();
-    const body = progress.isEmpty ? this.#t("client.processing") : progress.markdown;
+    const body = this.#buildStreamBody(state);
     try {
       await this.#client.sendStreamText(chatId, body, { replyToMessageId, finish: true });
     } catch (error) {
@@ -385,10 +474,66 @@ const replyToMessageId = this.#lastInboundMessageIdBySession.get(event.clientSes
     }
   }
 
+  /**
+   * Renders the in-place bubble body: progress lines (tool activity etc.)
+   * followed by the streamed answer text. Progress is kept because the same
+   * bubble is the only place the user can see what the agent is doing.
+   */
+  #buildStreamBody(state: ProgressState): string {
+    const progress = state.renderer.getCurrentProgress();
+    const sections: string[] = [];
+    if (!progress.isEmpty) {
+      sections.push(progress.markdown);
+    }
+    const answer = stripStreamMediaMarkers(state.answerText);
+    if (answer.length > 0) {
+      sections.push(answer);
+    }
+
+    if (sections.length === 0) {
+      return this.#t("client.processing");
+    }
+    return clampStreamBody(sections.join("\n\n"));
+  }
+
+  /**
+   * Rewrites the in-place bubble with the cumulative answer text. WeCom
+   * overwrites `stream.content` per frame, so the full body is always sent;
+   * the agent adapter throttles the frame rate.
+   */
+  async #handleDeltaEvent(
+    chatId: string,
+    event: Extract<ClientInputEvent, { type: "assistant.delta" }>,
+    replyToMessageId?: string,
+  ): Promise<void> {
+    if (!this.#client) {
+      return;
+    }
+
+    const state = this.#progressStateBySession.get(event.clientSessionId) ?? {
+      renderer: new ProgressRenderer({ t: this.#t }),
+      announced: false,
+      streaming: false,
+      answerText: "",
+    };
+    this.#progressStateBySession.set(event.clientSessionId, state);
+
+    state.streaming = true;
+    state.answerText = event.text;
+
+    await this.#client.sendStreamText(chatId, this.#buildStreamBody(state), {
+      replyToMessageId,
+      finish: false,
+    });
+    state.announced = true;
+  }
+
   #resetProgressState(clientSessionId: string): void {
     this.#progressStateBySession.set(clientSessionId, {
       renderer: new ProgressRenderer({ t: this.#t }),
       announced: false,
+      streaming: false,
+      answerText: "",
     });
   }
 

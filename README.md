@@ -146,6 +146,29 @@ The clock is read when the message arrives, so a long-lived channel never stamps
 
 Only text typed by a person in the IM app is stamped. Prompts injected by scheduled tasks and event queues are left untouched, because their bodies (including the `BRIDGE_TASK_STATUS_DONE` marker) are part of the completion protocol. The setting is off by default; `false` is the same as omitting it. Note that pi already records a millisecond timestamp on every message, so this option exists to make the time visible to the model in the message body itself, not to add information the agent adapter lacks.
 
+## Stream replies in place
+
+WeCom is the first client that renders an answer while the agent is still writing. Instead of one message per assistant turn (which reads as a burst of separate bubbles), the bridge keeps rewriting the single reply bubble it already opened for that message, then closes it once the run is settled.
+
+This is on by default for clients that support it. Turn it off with:
+
+```json
+{
+  "defaults": {
+    "streaming": false
+  }
+}
+```
+
+How it works, and what it costs:
+
+- The pi adapter listens for `message_update` / `text_delta` frames, accumulates them per run and emits at most one `assistant.delta` every 600 ms. Each frame carries the whole run text, never a patch, because WeCom overwrites `stream.content` per frame rather than appending.
+- The bubble is closed on `agent_settled`, not `agent_end`. Pi may still retry, compact, or accept steering after `agent_end`; `agent_settled` is the only authoritative "no more output" signal.
+- Tool activity lines stay in the same bubble above the answer, so progress and text never fight for two places.
+- WeCom caps one streamed reply at 20480 bytes and 10 minutes; the bridge truncates long bodies (head + tail) instead of failing, and a finish frame on an already-closed stream only logs a warning.
+- `MEDIA:` directives are stripped from streamed frames — a half-received marker would otherwise flash in the bubble — and the real attachments are sent after the run completes.
+- Clients without streaming support (WeChat personal accounts) ignore these frames entirely; the gateway drops them before they reach the adapter, so nothing changes for them.
+
 ## Development
 
 ```bash

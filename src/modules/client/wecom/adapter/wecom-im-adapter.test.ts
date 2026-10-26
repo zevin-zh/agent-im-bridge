@@ -1133,4 +1133,141 @@ describe("WecomIMAdapter", () => {
       "msg-resume-usage",
     );
   });
+
+  it("streams assistant.delta frames into the same reply bubble", async () => {
+    const adapter = new WecomIMAdapter(
+      {
+        botId: "bot-id",
+        secret: "secret",
+        requireMentionInGroup: true,
+      },
+      createLogger("test"),
+    );
+
+    await adapter.start(async () => {});
+    await fakeClientState.onMessage?.({
+      chatId: "user_1",
+      chatType: "dm",
+      messageId: "msg-delta",
+      text: "hello",
+      mentionedBot: false,
+    });
+    fakeClientState.sendStreamText.mockClear();
+
+    await adapter.input({
+      type: "assistant.delta",
+      clientSessionId: "wecom:dm:user_1",
+      agentSessionId: "agent-1",
+      text: "Hel",
+    });
+    await adapter.input({
+      type: "assistant.delta",
+      clientSessionId: "wecom:dm:user_1",
+      agentSessionId: "agent-1",
+      text: "Hello world",
+    });
+
+    await waitFor(() => fakeClientState.sendStreamText.mock.calls.length === 2);
+
+    // Every frame carries the whole run text: stream.content is overwrite-only.
+    expect(fakeClientState.sendStreamText.mock.calls[1]?.[1]).toBe("Hello world");
+    expect(fakeClientState.sendStreamText.mock.calls[1]?.[2]).toEqual({
+      replyToMessageId: "msg-delta",
+      finish: false,
+    });
+    expect(fakeClientState.sendText).not.toHaveBeenCalled();
+  });
+
+  it("does not repeat streamed text and closes the bubble on agent.run.settled", async () => {
+    const adapter = new WecomIMAdapter(
+      {
+        botId: "bot-id",
+        secret: "secret",
+        requireMentionInGroup: true,
+      },
+      createLogger("test"),
+    );
+
+    await adapter.start(async () => {});
+    await fakeClientState.onMessage?.({
+      chatId: "user_1",
+      chatType: "dm",
+      messageId: "msg-delta-settle",
+      text: "hello",
+      mentionedBot: false,
+    });
+    fakeClientState.sendStreamText.mockClear();
+    fakeClientState.sendText.mockClear();
+
+    await adapter.input({
+      type: "assistant.delta",
+      clientSessionId: "wecom:dm:user_1",
+      agentSessionId: "agent-1",
+      text: "Hello world",
+    });
+    // Real ordering is delta -> message_end -> agent_settled; the completion
+    // event must stay silent because the text already reached the bubble.
+    await adapter.input({
+      type: "assistant.message",
+      clientSessionId: "wecom:dm:user_1",
+      agentSessionId: "agent-1",
+      text: "Hello world",
+      attachments: [],
+    });
+    await adapter.input({
+      type: "agent.run.settled",
+      clientSessionId: "wecom:dm:user_1",
+      agentSessionId: "agent-1",
+      aborted: false,
+    });
+
+    await waitFor(() =>
+      fakeClientState.sendStreamText.mock.calls.some((call) => call[2]?.finish === true),
+    );
+
+    expect(fakeClientState.sendText).not.toHaveBeenCalled();
+    const finished = fakeClientState.sendStreamText.mock.calls.find((call) => call[2]?.finish === true);
+    expect(finished?.[1]).toBe("Hello world");
+    expect(finished?.[2]).toEqual({ replyToMessageId: "msg-delta-settle", finish: true });
+  });
+
+  it("keeps progress lines while streaming and hides half-received MEDIA markers", async () => {
+    const adapter = new WecomIMAdapter(
+      {
+        botId: "bot-id",
+        secret: "secret",
+        requireMentionInGroup: true,
+      },
+      createLogger("test"),
+    );
+
+    await adapter.start(async () => {});
+    await fakeClientState.onMessage?.({
+      chatId: "user_1",
+      chatType: "dm",
+      messageId: "msg-delta-media",
+      text: "hello",
+      mentionedBot: false,
+    });
+    fakeClientState.sendStreamText.mockClear();
+
+    await adapter.input({
+      type: "assistant.tool.running",
+      clientSessionId: "wecom:dm:user_1",
+      agentSessionId: "agent-1",
+      toolName: "bash",
+      text: undefined,
+    });
+    await adapter.input({
+      type: "assistant.delta",
+      clientSessionId: "wecom:dm:user_1",
+      agentSessionId: "agent-1",
+      text: "Done. MEDIA:/tmp/report.p",
+    });
+
+    await waitFor(() => fakeClientState.sendStreamText.mock.calls.length === 2);
+
+    const body = fakeClientState.sendStreamText.mock.calls[1]?.[1] as string;
+    expect(body).toBe(["- ⏳ bash", "Done."].join("\n\n"));
+  });
 });

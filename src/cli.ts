@@ -913,6 +913,7 @@ async function runScheduleTask(taskName: string): Promise<void> {
     ...(config.defaults.messageTimestamp !== undefined
       ? { messageTimestamp: config.defaults.messageTimestamp }
       : {}),
+    ...(config.defaults.streaming !== undefined ? { streaming: config.defaults.streaming } : {}),
     channelStateStore,
     agentSessionStateRegistry,
     common,

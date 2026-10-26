@@ -72,6 +72,13 @@ export class GatewayCore {
    * stamps a stale time.
    */
   readonly #messageTimestamp?: MessageTimestampConfig;
+  /**
+   * Whether in-place streaming is allowed (see `GatewayCoreOptions.streaming`).
+   * Streaming output is only forwarded when the IM adapter declares
+   * `supportsStreaming` and this is not `false`; otherwise the adapter keeps
+   * receiving one completed `assistant.message` per assistant turn.
+   */
+  readonly #streaming: boolean;
   readonly #channelStateStore: NonNullable<GatewayCoreOptions["channelStateStore"]>;
   readonly #agentSessionStateRegistry: NonNullable<GatewayCoreOptions["agentSessionStateRegistry"]>;
   readonly #common?: ChannelCommonContext;
@@ -106,6 +113,7 @@ export class GatewayCore {
     agentIdleTimeoutMs,
     allowedWorkingDirectoryRoots,
     messageTimestamp,
+    streaming,
     channelStateStore,
     agentSessionStateRegistry,
     common,
@@ -118,6 +126,7 @@ export class GatewayCore {
     this.#agentIdleTimeoutMs = agentIdleTimeoutMs;
     this.#allowedWorkingDirectoryRoots = allowedWorkingDirectoryRoots;
     this.#messageTimestamp = messageTimestamp;
+    this.#streaming = streaming !== false;
     this.#channelStateStore = channelStateStore ?? createInMemoryChannelStateStore();
     this.#agentSessionStateRegistry =
       agentSessionStateRegistry ?? createAgentSessionStateRegistry(this.#channelStateStore);
@@ -1004,6 +1013,17 @@ export class GatewayCore {
     }
   }
 
+  /**
+   * True when in-place streaming frames (`assistant.delta`, `agent.run.settled`)
+   * may be forwarded to the IM adapter. Requires both the channel-level
+   * `defaults.streaming` switch and the adapter's own `supportsStreaming`
+   * capability — an adapter that cannot rewrite a bubble in place would
+   * otherwise render the same text twice.
+   */
+  #streamsToClient(): boolean {
+    return this.#streaming && this.#imAdapter.supportsStreaming === true;
+  }
+
   #resolveModelCommandError(error: unknown): { kind: string; detail?: string } {
     const detail = error instanceof Error ? error.message : String(error);
     if (typeof error === "object" && error && "kind" in error && typeof error.kind === "string") {
@@ -1050,6 +1070,14 @@ export class GatewayCore {
       // same mechanics as the schedule divert, with every event handed to the
       // queue controller's output callback instead of the IM adapter.
       await this.#divertOutput(event, clientSessionId, this.#onQueueOutput, "queue");
+      return;
+    }
+
+    if (!this.#streamsToClient() && (event.type === "assistant.delta" || event.type === "agent.run.settled")) {
+      // Streaming frames only make sense for adapters that can rewrite one
+      // bubble in place. Everyone else keeps receiving the completed
+      // `assistant.message`, so the frames are dropped here (before any
+      // adapter sees them) instead of leaking into progress rendering.
       return;
     }
 
