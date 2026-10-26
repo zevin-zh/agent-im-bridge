@@ -164,7 +164,7 @@ How it works, and what it costs:
 
 - The pi adapter listens for `message_update` / `text_delta` frames, accumulates them per run and emits at most one `assistant.delta` every 600 ms. Each frame carries the whole run text, never a patch, because WeCom overwrites `stream.content` per frame rather than appending.
 - The bubble is closed on `agent_settled`, not `agent_end`. Pi may still retry, compact, or accept steering after `agent_end`; `agent_settled` is the only authoritative "no more output" signal.
-- Tool activity lines stay in the same bubble above the answer, so progress and text never fight for two places.
+- Tool activity lines fill the bubble only while there is no answer text yet. Once the answer starts streaming they are dropped, and the final frame is answer-only: tool names are implementation detail, and keeping them above a growing answer turns every reply into a build log.
 - WeCom caps one streamed reply at 20480 bytes and 10 minutes; the bridge truncates long bodies (head + tail) instead of failing, and a finish frame on an already-closed stream only logs a warning.
 - `MEDIA:` directives are stripped from streamed frames — a half-received marker would otherwise flash in the bubble — and the real attachments are sent after the run completes.
 - Clients without streaming support (WeChat personal accounts) ignore these frames entirely; the gateway drops them before they reach the adapter, so nothing changes for them.

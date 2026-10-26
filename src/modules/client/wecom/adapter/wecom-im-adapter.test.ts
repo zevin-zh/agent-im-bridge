@@ -1231,7 +1231,7 @@ describe("WecomIMAdapter", () => {
     expect(finished?.[2]).toEqual({ replyToMessageId: "msg-delta-settle", finish: true });
   });
 
-  it("keeps progress lines while streaming and hides half-received MEDIA markers", async () => {
+  it("drops progress lines once the answer streams and hides half-received MEDIA markers", async () => {
     const adapter = new WecomIMAdapter(
       {
         botId: "bot-id",
@@ -1258,6 +1258,11 @@ describe("WecomIMAdapter", () => {
       toolName: "bash",
       text: undefined,
     });
+    // Before any answer text exists the bubble is the only sign of life, so
+    // tool activity is shown.
+    await waitFor(() => fakeClientState.sendStreamText.mock.calls.length === 1);
+    expect(fakeClientState.sendStreamText.mock.calls[0]?.[1]).toBe("- ⏳ bash");
+
     await adapter.input({
       type: "assistant.delta",
       clientSessionId: "wecom:dm:user_1",
@@ -1267,7 +1272,50 @@ describe("WecomIMAdapter", () => {
 
     await waitFor(() => fakeClientState.sendStreamText.mock.calls.length === 2);
 
+    // Answer text arrived: tool lines and the half-received MEDIA marker are
+    // both gone, leaving only what the user asked for.
     const body = fakeClientState.sendStreamText.mock.calls[1]?.[1] as string;
-    expect(body).toBe(["- ⏳ bash", "Done."].join("\n\n"));
+    expect(body).toBe("Done.");
+  });
+
+  it("never repeats progress lines in the final frame", async () => {
+    const adapter = new WecomIMAdapter(
+      {
+        botId: "bot-id",
+        secret: "secret",
+        requireMentionInGroup: true,
+      },
+      createLogger("test"),
+    );
+
+    await adapter.start(async () => {});
+    await fakeClientState.onMessage?.({
+      chatId: "user_1",
+      chatType: "dm",
+      messageId: "msg-delta-final",
+      text: "hello",
+      mentionedBot: false,
+    });
+    fakeClientState.sendStreamText.mockClear();
+
+    await adapter.input({
+      type: "assistant.delta",
+      clientSessionId: "wecom:dm:user_1",
+      agentSessionId: "agent-1",
+      text: "All done.",
+    });
+    await adapter.input({
+      type: "agent.run.settled",
+      clientSessionId: "wecom:dm:user_1",
+      agentSessionId: "agent-1",
+      aborted: false,
+    });
+
+    await waitFor(() =>
+      fakeClientState.sendStreamText.mock.calls.some((call) => call[2]?.finish === true),
+    );
+
+    const finished = fakeClientState.sendStreamText.mock.calls.find((call) => call[2]?.finish === true);
+    expect(finished?.[1]).toBe("All done.");
   });
 });
