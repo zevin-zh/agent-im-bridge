@@ -443,8 +443,10 @@ export class WecomIMAdapter implements IMAdapter {
     state.renderer.takeProgressEvent(event);
 
     // Refresh the same stream message in place, like the feishu adapter
-    // updates its progress card.
-    const body = state.renderer.getCurrentProgress().markdown;
+    // updates its progress card. Go through #buildStreamBody so that a tool
+    // event arriving after the answer started streaming cannot overwrite the
+    // bubble with progress-only content.
+    const body = this.#buildStreamBody(state);
     const replyToMessageId = this.#lastInboundMessageIdBySession.get(event.clientSessionId);
     await this.#client.sendStreamText(chatId, body, {
       replyToMessageId,
@@ -464,7 +466,7 @@ export class WecomIMAdapter implements IMAdapter {
     }
     this.#progressStateBySession.delete(clientSessionId);
 
-    const body = this.#buildStreamBody(state);
+    const body = this.#buildStreamBody(state, { final: true });
     try {
       await this.#client.sendStreamText(chatId, body, { replyToMessageId, finish: true });
     } catch (error) {
@@ -475,17 +477,28 @@ export class WecomIMAdapter implements IMAdapter {
   }
 
   /**
-   * Renders the in-place bubble body: progress lines (tool activity etc.)
-   * followed by the streamed answer text. Progress is kept because the same
-   * bubble is the only place the user can see what the agent is doing.
+   * Renders the in-place bubble body.
+   *
+   * While the agent is still working (no answer text yet, or a tool is
+   * actually in flight) the body shows the progress lines: the single reply
+   * bubble is the only place the user can see that something is happening, and
+   * a motionless bubble during a long tool call reads as a hang.
+   *
+   * As soon as answer text flows, the body becomes answer-only. Tool names are
+   * implementation detail the user did not ask for, and keeping them above a
+   * growing answer turns every reply into a build log. The progress section
+   * returns only if a later tool call would otherwise freeze the bubble, and
+   * the final frame never carries it.
    */
-  #buildStreamBody(state: ProgressState): string {
+  #buildStreamBody(state: ProgressState, options?: { final?: boolean }): string {
     const progress = state.renderer.getCurrentProgress();
+    const answer = stripStreamMediaMarkers(state.answerText);
+
+    const showProgress = options?.final !== true && answer.length === 0;
     const sections: string[] = [];
-    if (!progress.isEmpty) {
+    if (showProgress && !progress.isEmpty) {
       sections.push(progress.markdown);
     }
-    const answer = stripStreamMediaMarkers(state.answerText);
     if (answer.length > 0) {
       sections.push(answer);
     }
