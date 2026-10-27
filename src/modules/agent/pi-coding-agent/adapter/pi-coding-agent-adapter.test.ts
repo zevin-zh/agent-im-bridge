@@ -1207,6 +1207,11 @@ describe("PiCodingAgentAdapter session working directory state", () => {
 
   it("fails before spawning when the working directory is not readable", async () => {
     // Root ignores permission bits, so skip the assertion in that environment.
+    // Windows ignores POSIX permission bits, so 0o000 never revokes read access
+    // there and the guard under test would stay silent. Root bypasses them too.
+    if (process.platform === "win32") {
+      return;
+    }
     if (typeof process.getuid === "function" && process.getuid() === 0) {
       return;
     }

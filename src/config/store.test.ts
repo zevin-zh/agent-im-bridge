@@ -1,3 +1,4 @@
+import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const readFile = vi.fn();
@@ -266,7 +267,9 @@ describe("config store", () => {
 
     expect(writeFile).toHaveBeenCalledTimes(1);
     const [filePath, payload, encoding] = writeFile.mock.calls[0]!;
-    expect(filePath).toBe("/tmp/agent-bridge-home/.config/agent-bridge/config.json");
+    expect(filePath).toBe(
+      path.join("/tmp/agent-bridge-home", ".config", "agent-bridge", "config.json"),
+    );
     expect(encoding).toBe("utf8");
     expect(JSON.parse(String(payload))).toEqual({
       channels: {},

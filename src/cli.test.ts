@@ -1,3 +1,4 @@
+import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { LoadedTask, ScheduleTask } from "./modules/schedule/task-file";
 import type { QueueDefinition, QueueTask } from "./modules/queue/queue-file";
@@ -51,6 +52,8 @@ const readdir = vi.fn(async () => []);
 const rename = vi.fn(async () => {});
 const loadAllTasks = vi.fn(async () => []);
 const getSchedulesDir = vi.fn(() => "/tmp/schedules");
+/** The schedule wizard's file path for the default "daily-report" task name. */
+const DAILY_REPORT_FILE = path.join("/tmp/schedules", "daily-report.md");
 
 /** Spies standing in for the one-shot Scheduler construction/trigger (schedule run). */
 const schedulerRunNow = vi.fn<(name: string) => Promise<{ ok: true } | { ok: false; reason: string }>>();
@@ -152,7 +155,9 @@ vi.mock("./modules/schedule/task-file", async (importOriginal) => {
 });
 
 /** Fixed temp root used by the mocked queue-file module (the CLI never sees it). */
-const TEST_QUEUES_ROOT = "/tmp/queues-test";
+const TEST_QUEUES_ROOT = path.join("/tmp", "queues-test");
+/** The queue wizard's definition path for the default "inbox" queue name. */
+const INBOX_FILE = path.join(TEST_QUEUES_ROOT, "inbox.md");
 const listQueueDefinitions = vi.fn(async () => []);
 const loadQueueDefinition = vi.fn(async () => null);
 const insertQueueTask = vi.fn(async () => "1750000000000-abcd");
@@ -228,7 +233,7 @@ function makeQueueDefinition(overrides: Partial<QueueDefinition> = {}): QueueDef
     target: undefined,
     enabled: true,
     body: "",
-    filePath: `${TEST_QUEUES_ROOT}/inbox.md`,
+    filePath: INBOX_FILE,
     ...overrides,
   };
 }
@@ -239,7 +244,7 @@ function makeQueueTask(overrides: Partial<QueueTask> = {}): QueueTask {
     state: "pending",
     enqueuedAt: "2026-08-19T08:00:00.000Z",
     prompt: "Do the thing.",
-    filePath: `${TEST_QUEUES_ROOT}/inbox.tasks/1750000000000-abcd.md`,
+    filePath: path.join(TEST_QUEUES_ROOT, "inbox.tasks", "1750000000000-abcd.md"),
     ...overrides,
   };
 }
@@ -511,10 +516,12 @@ describe("runCli schedule add", () => {
       "input:Working directory (optional, blank = bridge cwd)",
     ]);
     expect(loadAllTasks).toHaveBeenCalledWith();
+    // Passed through verbatim from the mocked getSchedulesDir, so the literal
+    // POSIX string is what the implementation hands to mkdir on every platform.
     expect(mkdir).toHaveBeenCalledWith("/tmp/schedules", { recursive: true });
     expect(writeFile).toHaveBeenCalledTimes(1);
     const [filePath, content] = writeFile.mock.calls[0] as [string, string, string];
-    expect(filePath).toBe("/tmp/schedules/daily-report.md");
+    expect(filePath).toBe(DAILY_REPORT_FILE);
     expect(content).toContain("schedule: daily 09:00");
     expect(content).toContain("timeout: 5h");
     // The default 30m silence answer writes the silence line.
@@ -527,7 +534,7 @@ describe("runCli schedule add", () => {
     expect(content).not.toContain("告诉我现在几点了");
     expect(logs.lines.join("\n")).toContain("Created successfully!");
     expect(logs.lines.join("\n")).toContain(
-      "- Edit /tmp/schedules/daily-report.md to set your prompt.",
+      `- Edit ${DAILY_REPORT_FILE} to set your prompt.`,
     );
     expect(logs.lines.join("\n")).toContain(
       "- Send `/schedule-here daily-report` in chat app to set the report place.",
@@ -693,8 +700,8 @@ describe("runCli schedule remove", () => {
 
     // No prompts, no confirmation — direct delete.
     expect(promptCalls).toEqual([]);
-    expect(unlink).toHaveBeenCalledWith("/tmp/schedules/daily-report.md");
-    expect(logs.lines.join("\n")).toContain("Deleted /tmp/schedules/daily-report.md");
+    expect(unlink).toHaveBeenCalledWith(DAILY_REPORT_FILE);
+    expect(logs.lines.join("\n")).toContain(`Deleted ${DAILY_REPORT_FILE}`);
   });
 
   it("rejects an invalid task name without touching the filesystem", async () => {
@@ -729,7 +736,7 @@ describe("runCli schedule with no channels", () => {
     const { runCli } = await import("./cli");
     await runCli(["node", "agent-bridge", "schedule", "add"]);
     const [filePath] = writeFile.mock.calls[0] as [string, string, string];
-    expect(filePath).toBe("/tmp/schedules/daily-report.md");
+    expect(filePath).toBe(DAILY_REPORT_FILE);
     expect(close).toHaveBeenCalledTimes(1);
   });
 
@@ -822,10 +829,10 @@ describe("runCli queue add", () => {
     expect(content).not.toContain("model:");
     expect(content).not.toContain("directory:");
     // Atomic write commits to the queue file path.
-    expect(rename).toHaveBeenCalledWith(expect.any(String), "/tmp/queues-test/inbox.md");
+    expect(rename).toHaveBeenCalledWith(expect.any(String), INBOX_FILE);
     const out = logs.lines.join("\n");
     expect(out).toContain("Created successfully!");
-    expect(out).toContain("- Edit /tmp/queues-test/inbox.md to set the shared context.");
+    expect(out).toContain(`- Edit ${INBOX_FILE} to set the shared context.`);
     expect(out).toContain("- Send `/queue-here inbox` in chat app to bind a chat.");
     expect(out).toContain("Insert tasks with `agent-bridge queue insert inbox --prompt");
     expect(close).toHaveBeenCalledTimes(1);
@@ -1254,6 +1261,28 @@ function makeHistoryLine(overrides: Record<string, unknown> = {}): string {
   })}\n`;
 }
 
+/**
+ * History file path for a kind, built the way the implementation builds it.
+ * The CLI reads through `runHistoryFilePath`, which `path.join`s the root, so
+ * the seed keys must carry the platform separator or the reader never finds
+ * them on Windows. The root is passed in rather than imported at module scope:
+ * `./config/channel-state` must only load after `node:fs/promises` is mocked,
+ * otherwise the mock factory hits the test's `const` bindings in their TDZ.
+ */
+function historyFile(root: string, kind: "schedule" | "queue"): string {
+  return path.join(root, `${kind}.jsonl`);
+}
+
+/**
+ * The real history root, imported lazily inside each test. A module-scope
+ * import of `./config/channel-state` would evaluate before the
+ * `node:fs/promises` mock factory runs, and that factory reads the test's
+ * `const` mocks — which throws "Cannot access 'mkdir' before initialization".
+ */
+async function historyRoot(): Promise<string> {
+  return (await import("./config/channel-state")).RUN_HISTORY_DIR;
+}
+
 /** Seeds the mocked fs with JSONL content per history file path. */
 function seedHistory(files: Record<string, string>): void {
   readFile.mockImplementation(async (p: unknown) => {
@@ -1284,9 +1313,8 @@ describe("runCli schedule history", () => {
   });
 
   it("prints the full table with all columns, newest first", async () => {
-    const { RUN_HISTORY_DIR } = await import("./config/channel-state");
     seedHistory({
-      [`${RUN_HISTORY_DIR}/schedule.jsonl`]: [
+      [historyFile(await historyRoot(), "schedule")]: [
         makeHistoryLine(), // 01:00 completed, daily-report
         makeHistoryLine({
           runId: "schedule:backup:20260820-093000-2",
@@ -1321,9 +1349,8 @@ describe("runCli schedule history", () => {
   });
 
   it("filters by task name", async () => {
-    const { RUN_HISTORY_DIR } = await import("./config/channel-state");
     seedHistory({
-      [`${RUN_HISTORY_DIR}/schedule.jsonl`]: [
+      [historyFile(await historyRoot(), "schedule")]: [
         makeHistoryLine(),
         makeHistoryLine({ runId: "schedule:backup:20260820-093000-2", ts: "2026-08-20T01:30:00.000Z" }),
       ].join(""),
@@ -1343,8 +1370,7 @@ describe("runCli schedule history", () => {
   });
 
   it("prints a task-specific hint when the filtered name has no history", async () => {
-    const { RUN_HISTORY_DIR } = await import("./config/channel-state");
-    seedHistory({ [`${RUN_HISTORY_DIR}/schedule.jsonl`]: makeHistoryLine() });
+    seedHistory({ [historyFile(await historyRoot(), "schedule")]: makeHistoryLine() });
     const { runCli } = await import("./cli");
     const logs = captureLogs();
     try {
@@ -1356,9 +1382,8 @@ describe("runCli schedule history", () => {
   });
 
   it("skips malformed lines and rows whose runId does not parse as a schedule id", async () => {
-    const { RUN_HISTORY_DIR } = await import("./config/channel-state");
     seedHistory({
-      [`${RUN_HISTORY_DIR}/schedule.jsonl`]: [
+      [historyFile(await historyRoot(), "schedule")]: [
         "{not json\n", // malformed JSON: skipped by the reader
         makeHistoryLine({ runId: "queue:build:1787134243550-6727" }), // wrong kind
         makeHistoryLine({ runId: "schedule:daily-report:20260821-090000-1", ts: "2026-08-21T01:00:00.000Z" }),
@@ -1401,9 +1426,8 @@ describe("runCli queue history", () => {
   });
 
   it("prints only the named queue's rows, newest first", async () => {
-    const { RUN_HISTORY_DIR } = await import("./config/channel-state");
     seedHistory({
-      [`${RUN_HISTORY_DIR}/queue.jsonl`]: [
+      [historyFile(await historyRoot(), "queue")]: [
         makeHistoryLine({ runId: "queue:build:1787134243550-6727", ms: 90_000 }),
         makeHistoryLine({
           runId: "queue:build:1787134243999-aaaa",
@@ -1531,7 +1555,7 @@ describe("runCli queue retry", () => {
     // vi.mock spread keeps the original export reachable).
     const queueFile = await import("./modules/queue/queue-file");
     const realRetry = queueFile.retryQueueTask;
-    const taskPath = `${TEST_QUEUES_ROOT}/inbox.tasks/1750000000000-abcd.md`;
+    const taskPath = path.join(TEST_QUEUES_ROOT, "inbox.tasks", "1750000000000-abcd.md");
     // Seed: the real retryQueueTask reads the failed task file via readFile.
     (readFile as ReturnType<typeof vi.fn>).mockImplementation(async (p: unknown) => {
       if (String(p) === taskPath) {
@@ -1594,10 +1618,9 @@ describe("runCli schedule run", () => {
 
   it("constructs the one-shot scheduler, calls runNow and prints the trigger confirmation", async () => {
     // A fresh terminal history line makes the wait settle immediately.
-    const { RUN_HISTORY_DIR } = await import("./config/channel-state");
     WAIT.extraTimeoutMs = 60_000;
     seedHistory({
-      [`${RUN_HISTORY_DIR}/schedule.jsonl`]: makeHistoryLine({ ts: new Date().toISOString() }),
+      [historyFile(await historyRoot(), "schedule")]: makeHistoryLine({ ts: new Date().toISOString() }),
     });
     const { runCli } = await import("./cli");
     const logs = captureLogs();
@@ -1636,13 +1659,12 @@ describe("runCli schedule run", () => {
     // Seed a terminal history line whose ts is NEWER than the CLI's sinceIso
     // (fresh run): the settle-wait must release on it BEFORE the bounded
     // deadline (extraTimeoutMs = 60 s here) fires.
-    const { RUN_HISTORY_DIR } = await import("./config/channel-state");
     WAIT.pollMs = 5;
     WAIT.graceMs = 1;
     WAIT.extraTimeoutMs = 60_000;
     const started = Date.now();
     seedHistory({
-      [`${RUN_HISTORY_DIR}/schedule.jsonl`]: makeHistoryLine({ ts: new Date().toISOString() }),
+      [historyFile(await historyRoot(), "schedule")]: makeHistoryLine({ ts: new Date().toISOString() }),
     });
     const { runCli } = await import("./cli");
     const logs = captureLogs();
@@ -1729,10 +1751,9 @@ describe("runCli schedule run", () => {
       },
     }));
     // A fresh terminal history line makes the wait settle immediately.
-    const { RUN_HISTORY_DIR } = await import("./config/channel-state");
     WAIT.extraTimeoutMs = 60_000;
     seedHistory({
-      [`${RUN_HISTORY_DIR}/schedule.jsonl`]: makeHistoryLine({ ts: new Date().toISOString() }),
+      [historyFile(await historyRoot(), "schedule")]: makeHistoryLine({ ts: new Date().toISOString() }),
     });
     const { runCli } = await import("./cli");
     const gatewayCore = await import("./core/gateway-core");
@@ -1774,10 +1795,9 @@ describe("runCli schedule run", () => {
       makeLoadedTask({ channel: "demo", target: "feishu:dm:oc_x" }),
     ]);
     // A fresh terminal history line makes the wait settle immediately.
-    const { RUN_HISTORY_DIR } = await import("./config/channel-state");
     WAIT.extraTimeoutMs = 60_000;
     seedHistory({
-      [`${RUN_HISTORY_DIR}/schedule.jsonl`]: makeHistoryLine({ ts: new Date().toISOString() }),
+      [historyFile(await historyRoot(), "schedule")]: makeHistoryLine({ ts: new Date().toISOString() }),
     });
     const { runCli } = await import("./cli");
     const gatewayCore = await import("./core/gateway-core");

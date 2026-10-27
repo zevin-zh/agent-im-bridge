@@ -845,7 +845,7 @@ Body.
 
 describe("getSchedulesDir", () => {
   it("returns the flat shared schedules directory (no channel subdirectory)", () => {
-    expect(getSchedulesDir("/tmp/root")).toBe("/tmp/root");
+    expect(getSchedulesDir("/tmp/root")).toBe(path.join("/tmp/root"));
     expect(getSchedulesDir()).toBe(SCHEDULES_DIR);
   });
 });

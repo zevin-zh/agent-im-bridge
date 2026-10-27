@@ -58,7 +58,7 @@ describe("runHistoryFilePath", () => {
   });
 
   it("uses the provided root when given", () => {
-    expect(runHistoryFilePath("queue", "/tmp/hist")).toBe("/tmp/hist/queue.jsonl");
+    expect(runHistoryFilePath("queue", "/tmp/hist")).toBe(path.join("/tmp/hist", "queue.jsonl"));
   });
 });
 

@@ -1,3 +1,4 @@
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const ORIGINAL_NODE_ENV = process.env.NODE_ENV;
@@ -19,7 +20,9 @@ describe("resolveMediaPromptExtensionPath", () => {
     const mod = await import("./pi-extension-path");
     const resolved = mod.resolveMediaPromptExtensionPath();
 
-    expect(resolved).toContain("src/modules/agent/pi-coding-agent/adapter/media-prompt.ts");
+    expect(resolved).toContain(
+      path.join("src", "modules", "agent", "pi-coding-agent", "adapter", "media-prompt.ts"),
+    );
   });
 
   it("requires the bundled media-prompt.js when NODE_ENV is not development", async () => {
