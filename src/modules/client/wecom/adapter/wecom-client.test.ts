@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createLogger } from "../../../../core/logger";
 import type { OutboundAttachment } from "../../../../types";
-import { WecomClient } from "./wecom-client";
+import { WECOM_WELCOME_REPLIES, WecomClient } from "./wecom-client";
 
 type MockFrame = {
   headers: { req_id: string };
@@ -497,15 +497,50 @@ describe("WecomClient", () => {
 
     await waitFor(() => sdkClient.replyWelcome.mock.calls.length === 1);
 
-    expect(sdkClient.replyWelcome).toHaveBeenCalledWith(
-      { headers: { req_id: "req-enter-1" } },
+    const [frame, payload] = sdkClient.replyWelcome.mock.calls[0] as [
+      { headers: { req_id: string } },
+      { msgtype: string; text: { content: string } },
+    ];
+    expect(frame).toEqual({ headers: { req_id: "req-enter-1" } });
+    expect(payload.msgtype).toBe("text");
+    expect(WECOM_WELCOME_REPLIES as readonly string[]).toContain(payload.text.content);
+  });
+
+  it("rotates the welcome reply pool on every enter_chat event", async () => {
+    const client = new WecomClient(
       {
-        msgtype: "text",
-        text: {
-          content: "您好，我已连接成功，可以直接给我发消息。",
-        },
+        botId: "bot-id",
+        secret: "secret",
       },
+      createLogger("test"),
     );
+    client.setOnMessage(async () => {});
+
+    const connecting = client.connect();
+    latestClient().emit("authenticated");
+    await connecting;
+
+    const sdkClient = latestClient();
+    // Deterministic pick order: 0.5 walks the pool so every reply appears once.
+    const randomSpy = vi.spyOn(Math, "random");
+    for (let i = 0; i < WECOM_WELCOME_REPLIES.length; i += 1) {
+      randomSpy.mockReturnValueOnce((i + 0.5) / WECOM_WELCOME_REPLIES.length);
+      sdkClient.emit("event.enter_chat", {
+        headers: { req_id: `req-enter-${i}` },
+        body: {
+          event: { eventtype: "enter_chat" },
+          from: { userid: "user_1" },
+        },
+      } satisfies MockFrame);
+    }
+
+    await waitFor(() => sdkClient.replyWelcome.mock.calls.length === WECOM_WELCOME_REPLIES.length);
+
+    const contents = sdkClient.replyWelcome.mock.calls.map(
+      (call) => (call as unknown as [unknown, { text: { content: string } }])[1].text.content,
+    );
+    expect(contents).toEqual([...WECOM_WELCOME_REPLIES]);
+    randomSpy.mockRestore();
   });
 
   it("uploads attachments and proactively sends when no reply context exists", async () => {

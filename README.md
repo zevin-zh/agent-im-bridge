@@ -169,6 +169,12 @@ How it works, and what it costs:
 - `MEDIA:` directives are stripped from streamed frames — a half-received marker would otherwise flash in the bubble — and the real attachments are sent after the run completes.
 - Clients without streaming support (WeChat personal accounts) ignore these frames entirely; the gateway drops them before they reach the adapter, so nothing changes for them.
 
+## Rotating the WeCom welcome reply
+
+WeCom sends an `enter_chat` event every time someone opens the bot conversation, so a single canned greeting gets repeated for the same user all day. The WeCom client now answers each event with a random line from a fixed pool (`WECOM_WELCOME_REPLIES` in `src/modules/client/wecom/adapter/wecom-client.ts`), which makes the bot read like a person rather than a template.
+
+Editing the pool means editing that array and rebuilding — there is no config key. Keep the lines short: WeCom renders this as a plain text reply in the chat window.
+
 ## Development
 
 ```bash

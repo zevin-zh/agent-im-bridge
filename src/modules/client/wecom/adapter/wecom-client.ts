@@ -17,6 +17,22 @@ const IMAGE_SIGNATURE_JPG = Buffer.from("ffd8ff", "hex");
 const PROCESSED_MESSAGE_ID_LIMIT = 500;
 const KICKED_ERROR_MESSAGE =
   "WeCom connection was closed by the server because a newer connection was established for the same bot; this instance will not reconnect";
+// WeCom fires enter_chat every time a user opens the bot conversation, so a
+// single canned greeting repeats forever. Rotate through a small pool instead;
+// the pick is random per event and nothing is persisted.
+export const WECOM_WELCOME_REPLIES = [
+  "瓦达西已上线，待命。",
+  "在线，什么需求？",
+  "服务就绪，请指示。",
+  "系统就位，说吧。",
+  "机械臂待机中，随时开工。",
+  "运行正常，需要我做什么？",
+] as const;
+
+function pickWelcomeReply(): string {
+  const index = Math.floor(Math.random() * WECOM_WELCOME_REPLIES.length);
+  return WECOM_WELCOME_REPLIES[index] ?? WECOM_WELCOME_REPLIES[0];
+}
 
 type MediaRef = {
   kind: "image" | "file";
@@ -489,9 +505,7 @@ export class WecomClient {
         { headers: { req_id: reqId } },
         {
           msgtype: "text",
-          text: {
-            content: "您好，我已连接成功，可以直接给我发消息。",
-          },
+          text: { content: pickWelcomeReply() },
         },
       );
       this.#logger.info(`sent enter_chat welcome reply (reqId=${reqId})`);
