@@ -113,6 +113,17 @@ function isStepOfPool(key: string, value: unknown): boolean {
   return isStepOfPoolIn(enTranslator, key, value);
 }
 
+/** True when `body` contains one of the variants of an `a|b|c` pool. */
+function containsStepVariant(key: string, body: unknown): boolean {
+  if (typeof body !== "string") {
+    return false;
+  }
+  return enTranslator(key)
+    .split("|")
+    .map((entry) => entry.trim())
+    .some((entry) => entry.length > 0 && body.includes(entry));
+}
+
 describe("WecomIMAdapter", () => {
   afterEach(() => {
     resetFakeClient();
@@ -694,12 +705,12 @@ describe("WecomIMAdapter", () => {
       ),
     );
 
-    // Every frame is a pool line; the last one reports the failure. Frames with
-    // an unchanged body are skipped, so the exact count is not fixed.
+    // Every frame starts from a pool line; the last one reports the failure.
+    // Frames with an unchanged body are skipped, so the exact count is not fixed.
     for (const call of fakeClientState.sendStreamText.mock.calls) {
       expect(
-        isStepOfPool("progress.steps.pool", call[1]) ||
-          isStepOfPool("progress.steps.failed", call[1]),
+        containsStepVariant("progress.steps.pool", call[1]) ||
+          containsStepVariant("progress.steps.failed", call[1]),
       ).toBe(true);
       expect(call[1]).not.toContain("web_search");
       expect(call[1]).not.toContain("bash");
@@ -1541,15 +1552,15 @@ describe("WecomIMAdapter", () => {
       toolCallId: "call-1",
     });
     await adapter.input({
-      type: "assistant.tool.done",
+      type: "assistant.tool.update",
       clientSessionId: "wecom:dm:user_1",
       agentSessionId: "agent-1",
       toolName: "bash",
       toolCallId: "call-1",
     });
 
-    // Running/update/done all carry the same line for one call, so only the
-    // first frame goes out. Everything else would be a repaint of the same text.
+    // Running and update carry the same line for one call, so only the first
+    // frame goes out. Everything else would be a repaint of the same text.
     expect(fakeClientState.sendStreamText).toHaveBeenCalledTimes(1);
   });
 
@@ -1626,7 +1637,7 @@ describe("WecomIMAdapter", () => {
     expect(fakeClientState.sendStreamText).toHaveBeenCalledTimes(1);
   });
 
-  it("shows a completed step's result under the line and drops it on the next step", async () => {
+  it("shows a status note after a step instead of the tool output", async () => {
     const adapter = new WecomIMAdapter(
       {
         botId: "bot-id",
@@ -1661,13 +1672,16 @@ describe("WecomIMAdapter", () => {
       agentSessionId: "agent-1",
       toolName: "bash",
       toolCallId: "call-1",
-      result: "build ok\noutput 448 KB",
+      result: "build ok / output 448 KB",
     });
 
     await waitFor(() => fakeClientState.sendStreamText.mock.calls.length > runningCount);
     const doneBody = fakeClientState.sendStreamText.mock.calls.at(-1)?.[1] as string;
-    expect(doneBody).toContain("Result: build ok");
-    expect(doneBody).toContain("output 448 KB");
+    expect(containsStepVariant("progress.steps.stepDone", doneBody)).toBe(true);
+    // The tool's own output never reaches the bubble.
+    expect(doneBody).not.toContain("build ok");
+    expect(doneBody).not.toContain("output 448 KB");
+    expect(doneBody).not.toContain("Result:");
 
     const doneCount = fakeClientState.sendStreamText.mock.calls.length;
     await adapter.input({
@@ -1680,17 +1694,17 @@ describe("WecomIMAdapter", () => {
 
     await waitFor(() => fakeClientState.sendStreamText.mock.calls.length > doneCount);
     const nextBody = fakeClientState.sendStreamText.mock.calls.at(-1)?.[1] as string;
-    // The next step starts from a clean line: the previous outcome is gone.
-    expect(nextBody).not.toContain("build ok");
-    expect(nextBody).not.toContain("Result:");
+    // The next step starts from a clean line: the previous note is gone.
+    expect(containsStepVariant("progress.steps.stepDone", nextBody)).toBe(false);
   });
 
-  it("clamps a long step result to three lines", async () => {
+  it("shows a truncated excerpt only when stepResultDetail is raw", async () => {
     const adapter = new WecomIMAdapter(
       {
         botId: "bot-id",
         secret: "secret",
         requireMentionInGroup: true,
+        stepResultDetail: "raw",
       },
       createLogger("test"),
     );
@@ -1717,13 +1731,13 @@ describe("WecomIMAdapter", () => {
 
     await waitFor(() => fakeClientState.sendStreamText.mock.calls.length === 1);
     const body = fakeClientState.sendStreamText.mock.calls[0]?.[1] as string;
-    expect(body).toContain("line 0");
+    expect(body).toContain("Result: line 0");
     expect(body).toContain("line 2");
     expect(body).not.toContain("line 3");
     expect(body).toContain("…");
   });
 
-  it("keeps the result out of the bubble when showStepResult is false", async () => {
+  it("keeps the step note out of the bubble when showStepResult is false", async () => {
     const adapter = new WecomIMAdapter(
       {
         botId: "bot-id",
@@ -1755,7 +1769,7 @@ describe("WecomIMAdapter", () => {
 
     await waitFor(() => fakeClientState.sendStreamText.mock.calls.length === 1);
     const body = fakeClientState.sendStreamText.mock.calls[0]?.[1] as string;
-    expect(body).not.toContain("Result:");
+    expect(containsStepVariant("progress.steps.stepDone", body)).toBe(false);
     expect(body).not.toContain("build ok");
   });
 });

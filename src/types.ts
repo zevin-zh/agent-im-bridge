@@ -496,6 +496,13 @@ export interface WecomClientConfig {
    * step line only.
    */
   showStepResult?: boolean;
+  /**
+   * How much of a finished step is shown under its line.
+   *
+   * - `status` (default): one status note, no tool output at all.
+   * - `raw`: a truncated excerpt of the tool result, prefixed with `Result:`.
+   */
+  stepResultDetail?: "status" | "raw";
 }
 
 export interface WeixinClientConfig {

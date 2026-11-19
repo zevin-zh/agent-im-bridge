@@ -673,9 +673,8 @@ export class WecomIMAdapter implements IMAdapter {
   }
 
   /**
-   * Mirrors the latest completed step's result into the bubble until the next
-   * step starts, so a finished step shows its outcome before the next line takes
-   * over. Running events clear it; update events leave it alone.
+   * Mirrors the latest completed step into the bubble until the next step
+   * starts. Running events clear it; update events leave it alone.
    */
   #applyStepResult(
     state: ProgressState,
@@ -688,7 +687,31 @@ export class WecomIMAdapter implements IMAdapter {
     if (event.type !== "assistant.tool.done" && event.type !== "assistant.tool.error") {
       return;
     }
-    state.stepResult = this.#showStepResult ? summarizeToolResult(event.result) : undefined;
+    state.stepResult = this.#stepResultFor(event);
+  }
+
+  /**
+   * The one extra line shown under a finished step.
+   *
+   * By default it is a status note, never the tool's output: stdout belongs in a
+   * terminal, and pasting it into a chat bubble turns the reply into a log.
+   * `stepResultDetail: "raw"` opts back into a truncated excerpt.
+   */
+  #stepResultFor(
+    event: Extract<ClientInputEvent, { type: "assistant.tool.done" | "assistant.tool.error" }>,
+  ): string | undefined {
+    if (!this.#showStepResult) {
+      return undefined;
+    }
+    if (event.type === "assistant.tool.error") {
+      // The step line already reports the failure; a second failure note is noise.
+      return undefined;
+    }
+    if (this.#stepResultDetail === "raw") {
+      const raw = summarizeToolResult(event.result);
+      return raw ? `${this.#t("progress.steps.resultPrefix")}${raw}` : undefined;
+    }
+    return pickStepVariant(this.#t("progress.steps.stepDone"));
   }
 
   /**
@@ -709,7 +732,7 @@ export class WecomIMAdapter implements IMAdapter {
       sections.push(progress.markdown);
     }
     if (!this.#streamAnswer && state.stepResult) {
-      sections.push(`${this.#t("progress.steps.resultPrefix")}${state.stepResult}`);
+      sections.push(state.stepResult);
     }
     if (this.#streamAnswer && answer.length > 0) {
       sections.push(answer);
@@ -770,6 +793,11 @@ export class WecomIMAdapter implements IMAdapter {
     return this.#config.showStepResult !== false;
   }
 
+  /** Whether a finished step shows a status note or a truncated result excerpt. */
+  get #stepResultDetail(): "status" | "raw" {
+    return this.#config.stepResultDetail === "raw" ? "raw" : "status";
+  }
+
   #startHeartbeat(state: ProgressState, chatId: string, replyToMessageId?: string): void {
     state.chatId = chatId;
     state.replyToMessageId = replyToMessageId;
@@ -818,9 +846,7 @@ export class WecomIMAdapter implements IMAdapter {
     const subject = progress.isEmpty
       ? (state.announceText ?? pickStepVariant(this.#t("progress.steps.pool")))
       : progress.markdown;
-    const base = state.stepResult
-      ? `${subject}\n\n${this.#t("progress.steps.resultPrefix")}${state.stepResult}`
-      : subject;
+    const base = state.stepResult ? `${subject}\n\n${state.stepResult}` : subject;
     const dots = (state.heartbeatTick % 3) + 1;
     state.heartbeatTick += 1;
     const body = clampStreamBody(`${base}${".".repeat(dots)}`);
