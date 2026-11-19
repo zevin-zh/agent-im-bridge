@@ -469,6 +469,20 @@ export interface WecomClientConfig {
   secret: string;
   websocketUrl?: string;
   requireMentionInGroup?: boolean;
+  /**
+   * How the in-place reply bubble renders the work in progress.
+   *
+   * - `steps` (default): one semantic step line ("running a command"), no tool
+   *   names, arguments or result details.
+   * - `log`: the full tool log, one line per tool event.
+   */
+  replyProgress?: "steps" | "log";
+  /**
+   * Stream answer text into the bubble as it arrives. Default `false`: the
+   * bubble shows only the step line while the agent works, then the whole
+   * answer replaces it in the closing frame.
+   */
+  streamAnswer?: boolean;
 }
 
 export interface WeixinClientConfig {

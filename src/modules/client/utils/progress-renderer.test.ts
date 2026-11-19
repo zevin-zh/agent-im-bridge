@@ -267,4 +267,80 @@ describe("ProgressRenderer", () => {
       ),
     );
   });
+
+  it("renders a single semantic step in steps mode, without tool names or labels", () => {
+    const renderer = new ProgressRenderer({ mode: "steps", t: getTranslator("en-US") });
+    renderer.takeProgressEvent({
+      type: "assistant.tool.running",
+      clientSessionId: "s1",
+      toolName: "bash",
+      toolLabel: "rm -rf /tmp/cache",
+    });
+    expect(renderer.getCurrentProgress().markdown).toBe("Running a command");
+
+    renderer.takeProgressEvent({
+      type: "assistant.tool.done",
+      clientSessionId: "s1",
+      toolName: "read",
+      toolLabel: "/etc/hosts",
+    });
+    // Only the current step survives: no history, no arguments.
+    const progress = renderer.getCurrentProgress();
+    expect(progress.markdown).toBe("Reading files");
+    expect(progress.collapsedCount).toBe(0);
+  });
+
+  it("collapses failures into one line in steps mode", () => {
+    const renderer = new ProgressRenderer({ mode: "steps", t: getTranslator("en-US") });
+    renderer.takeProgressEvent({
+      type: "assistant.tool.error",
+      clientSessionId: "s1",
+      toolName: "bash",
+      text: "exit 1",
+    });
+    const progress = renderer.getCurrentProgress();
+    expect(progress.markdown).toBe("The previous step failed, continuing.");
+    expect(progress.status).toBe("error");
+  });
+
+  it("maps unknown tools and tool-name prefixes onto step families", () => {
+    const renderer = new ProgressRenderer({ mode: "steps", t: getTranslator("en-US") });
+    renderer.takeProgressEvent({
+      type: "assistant.tool.running",
+      clientSessionId: "s1",
+      toolName: "lsp_hover",
+    });
+    expect(renderer.getCurrentProgress().markdown).toBe("Reading files");
+
+    renderer.takeProgressEvent({
+      type: "assistant.tool.running",
+      clientSessionId: "s1",
+      toolName: "mcp__jenkins__trigger",
+    });
+    expect(renderer.getCurrentProgress().markdown).toBe("Working on it");
+  });
+
+  it("renders step lines in Chinese", () => {
+    const renderer = new ProgressRenderer({ mode: "steps", t: getTranslator("zh-CN") });
+    renderer.takeProgressEvent({
+      type: "assistant.tool.running",
+      clientSessionId: "s1",
+      toolName: "web_search",
+    });
+    expect(renderer.getCurrentProgress().markdown).toBe("正在获取网页");
+
+    renderer.takeProgressEvent({ type: "session.compacting", clientSessionId: "s1" });
+    expect(renderer.getCurrentProgress().markdown).toBe("正在压缩上下文");
+  });
+
+  it("keeps the per-tool log when mode is log", () => {
+    const renderer = new ProgressRenderer({ mode: "log", t: getTranslator("en-US") });
+    renderer.takeProgressEvent({
+      type: "assistant.tool.running",
+      clientSessionId: "s1",
+      toolName: "bash",
+      toolLabel: "npm test",
+    });
+    expect(renderer.getCurrentProgress().markdown).toBe("- ⏳ bash: npm test");
+  });
 });

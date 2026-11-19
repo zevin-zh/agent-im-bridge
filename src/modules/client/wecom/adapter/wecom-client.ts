@@ -58,6 +58,14 @@ type SdkClientLike = {
     msgItem?: Array<Record<string, unknown>>,
     feedback?: { id: string },
   ): Promise<unknown>;
+  replyStreamNonBlocking(
+    frame: { req_id: string } | { headers: { req_id: string } },
+    streamId: string,
+    content: string,
+    finish?: boolean,
+    msgItem?: Array<Record<string, unknown>>,
+    feedback?: { id: string },
+  ): Promise<unknown>;
   replyMedia(
     frame: { req_id: string } | { headers: { req_id: string } },
     mediaType: "image" | "file" | "voice" | "video",
@@ -241,6 +249,13 @@ export class WecomClient {
       replyToMessageId?: string;
       finish?: boolean;
       feedbackId?: string;
+      /**
+       * Skip this frame when the previous one has not been acked yet. Used for
+       * heartbeat/step refreshes: dropping a superseded frame beats queueing it
+       * and letting the bubble lag behind. Ignored for `finish: true`, which is
+       * always delivered.
+       */
+      nonBlocking?: boolean;
     },
   ): Promise<void> {
     const client = this.#requireClient();
@@ -255,14 +270,9 @@ export class WecomClient {
 
     const streamContext = this.#streamContextFor(chatId, replyToMessageId);
     const feedback = !streamContext.started && options?.feedbackId ? { id: options.feedbackId } : undefined;
-    await client.replyStream(
-      replyContext.frame,
-      streamContext.streamId,
-      text,
-      options?.finish ?? false,
-      undefined,
-      feedback,
-    );
+    const finish = options?.finish ?? false;
+    const send = options?.nonBlocking === true && !finish ? client.replyStreamNonBlocking : client.replyStream;
+    await send.call(client, replyContext.frame, streamContext.streamId, text, finish, undefined, feedback);
     streamContext.started = true;
   }
 

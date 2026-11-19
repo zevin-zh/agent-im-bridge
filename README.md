@@ -164,8 +164,10 @@ How it works, and what it costs:
 
 - The pi adapter listens for `message_update` / `text_delta` frames, accumulates them per run and emits at most one `assistant.delta` every 600 ms. Each frame carries the whole run text, never a patch, because WeCom overwrites `stream.content` per frame rather than appending.
 - The bubble is closed on `agent_settled`, not `agent_end`. Pi may still retry, compact, or accept steering after `agent_end`; `agent_settled` is the only authoritative "no more output" signal.
-- Tool activity lines fill the bubble only while there is no answer text yet. Once the answer starts streaming they are dropped, and the final frame is answer-only: tool names are implementation detail, and keeping them above a growing answer turns every reply into a build log.
-- WeCom caps one streamed reply at 20480 bytes and 10 minutes; the bridge truncates long bodies (head + tail) instead of failing, and a finish frame on an already-closed stream only logs a warning.
+- The bubble shows one step at a time, not a build log. Tool events are mapped onto a semantic line — running a command, reading files, editing files, searching content, fetching web content — and tool names, arguments and results never reach the chat. Progressively longer work keeps refreshing that line with the elapsed time so the bubble never looks frozen.
+- Answer text is held back until the run settles. The closing frame carries the whole answer, which overwrites every step line in the bubble: what the user keeps is the result, nothing else. Long answers land in one piece instead of typing themselves out above a progress list.
+- `replyProgress` switches the rendering: `steps` is the default above, `log` restores the per-tool lines with names and labels. `streamAnswer: true` restores the older behavior of typing the answer into the bubble while the agent writes.
+- WeCom caps one streamed reply at 20480 bytes and 10 minutes; the closing frame keeps the head of a long answer in the bubble and delivers the remainder as follow-up messages, and a finish frame on an already-closed stream only logs a warning before retrying the answer as a plain message.
 - `MEDIA:` directives are stripped from streamed frames — a half-received marker would otherwise flash in the bubble — and the real attachments are sent after the run completes.
 - Clients without streaming support (WeChat personal accounts) ignore these frames entirely; the gateway drops them before they reach the adapter, so nothing changes for them.
 

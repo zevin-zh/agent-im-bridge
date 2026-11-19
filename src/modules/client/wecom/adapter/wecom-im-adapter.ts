@@ -12,7 +12,7 @@ import type {
 import { formatSendFailureNotice, getTranslatorForCommon, type Translator } from "../../../../i18n";
 import { createLogger, type Logger } from "../../../../core/logger";
 import { isCompletedCommandResponse, isTerminalAgentError } from "../../utils/error-events";
-import { ProgressRenderer } from "../../utils/progress-renderer";
+import { ProgressRenderer, type ProgressRendererMode } from "../../utils/progress-renderer";
 import {
   formatQueueHereReply,
   formatScheduleHereReply,
@@ -44,6 +44,12 @@ const MAX_TEXT_CHUNK = 4000;
  * character costs three of them.
  */
 const MAX_STREAM_BODY_BYTES = 16000;
+/**
+ * How often a motionless bubble is refreshed while a long step is still in
+ * flight. Without it the answer-only design would leave the bubble frozen from
+ * the moment the last step started until the run settles.
+ */
+const STEP_HEARTBEAT_INTERVAL_MS = 5000;
 
 // Display-only twin of the marker pattern in `media-convention.ts`: the delta
 // stream may cut a `MEDIA:` marker in half, and files may not exist yet, so
@@ -56,13 +62,24 @@ type ProgressState = {
   renderer: ProgressRenderer;
   announced: boolean;
   /**
-   * True once this turn started rendering streaming answer text into the
-   * bubble. Only then is the trailing `assistant.message` treated as
-   * already-delivered content instead of a fresh chat message.
+   * True once this run reported answer text. The completion event must then not
+   * repeat it: the closing frame of the bubble already carries the answer.
    */
   streaming: boolean;
-  /** Answer text already rendered into the bubble (cumulative for the run). */
+  /** Cumulative answer text for the run, as last reported by `assistant.delta`. */
   answerText: string;
+  /**
+   * Text of the most recent `assistant.message`: the run's final answer, which
+   * is what the closing bubble frame shows when it is available.
+   */
+  lastMessageText: string;
+  /** Chat the bubble belongs to; the heartbeat needs it. */
+  chatId?: string;
+  replyToMessageId?: string;
+  startedAt: number;
+  heartbeat?: ReturnType<typeof setInterval>;
+  /** Suppresses a heartbeat frame that would repeat the body already sent. */
+  lastBody?: string;
 };
 
 /** Strips `MEDIA:` directives (including a half-received trailing one) for display. */
@@ -102,6 +119,42 @@ function clampStreamBody(body: string): string {
   }
 
   return `${head}${separator}${tail}`;
+}
+
+/**
+ * Splits the final bubble body into what fits the stream frame and the rest,
+ * which is delivered as follow-up messages. Cuts on a line boundary so the
+ * markdown that stays in the bubble is not left half-finished.
+ */
+function splitFinalBody(body: string): { head: string; rest: string } {
+  if (Buffer.byteLength(body, "utf8") <= MAX_STREAM_BODY_BYTES) {
+    return { head: body, rest: "" };
+  }
+
+  const lines = body.split("\n");
+  let head = "";
+  let index = 0;
+  for (; index < lines.length; index++) {
+    const candidate = head.length === 0 ? lines[index] : `${head}\n${lines[index]}`;
+    if (Buffer.byteLength(candidate, "utf8") > MAX_STREAM_BODY_BYTES) break;
+    head = candidate;
+  }
+
+  if (head.length === 0) {
+    // One unbroken line larger than the whole budget: fall back to a char cut.
+    const chars = [...body];
+    let cut = 0;
+    let bytes = 0;
+    for (const char of chars) {
+      const size = Buffer.byteLength(char, "utf8");
+      if (bytes + size > MAX_STREAM_BODY_BYTES) break;
+      bytes += size;
+      cut += 1;
+    }
+    head = chars.slice(0, cut).join("");
+  }
+
+  return { head, rest: body.slice(head.length).replace(/^\n+/, "") };
 }
 
 function chunkText(text: string, maxLen: number): string[] {
@@ -305,6 +358,9 @@ export class WecomIMAdapter implements IMAdapter {
 
   async stop(): Promise<void> {
     this.#egressQueue.length = 0;
+    for (const state of this.#progressStateBySession.values()) {
+      this.#stopHeartbeat(state);
+    }
     this.#progressStateBySession.clear();
     if (this.#client) {
       await this.#client.disconnect();
@@ -373,17 +429,25 @@ export class WecomIMAdapter implements IMAdapter {
           }
 
           const replyToMessageId = this.#lastInboundMessageIdBySession.get(event.clientSessionId);
-          // When the answer already streamed into the bubble, the completion
-          // event must not repeat it; only attachments still need delivery.
-          const streamedInPlace = this.#progressStateBySession.get(event.clientSessionId)?.streaming === true;
-          if (!streamedInPlace) {
-            await this.#finishProgressMessage(target.chatId, event.clientSessionId, replyToMessageId);
+          const state = this.#progressStateBySession.get(event.clientSessionId);
+          if (state) {
+            state.lastMessageText = event.text;
+          }
+
+          // The closing frame of the bubble is the only place the answer is
+          // delivered, so the completion event must not repeat it. When this
+          // run never reported answer text there is nothing queued for the
+          // bubble, so commit the completion text into it right here instead of
+          // posting a second message next to a "processing" bubble.
+          if (state === undefined || !state.announced) {
             if (event.text.trim().length > 0) {
               const chunks = chunkText(event.text, MAX_TEXT_CHUNK);
               for (const [index, chunk] of chunks.entries()) {
                 await this.#client.sendText(target.chatId, chunk, index === 0 ? replyToMessageId : undefined);
               }
             }
+          } else if (state.streaming !== true) {
+            await this.#finishProgressMessage(target.chatId, event.clientSessionId, replyToMessageId, event.text);
           }
           for (const attachment of event.attachments ?? []) {
             try {
@@ -419,6 +483,8 @@ export class WecomIMAdapter implements IMAdapter {
       finish: false,
     });
     state.announced = true;
+    state.lastBody = this.#t("client.processing");
+    this.#startHeartbeat(state, chatId, messageId);
   }
 
   async #handleProgressEvent(
@@ -429,77 +495,104 @@ export class WecomIMAdapter implements IMAdapter {
       return;
     }
 
-    const state = this.#progressStateBySession.get(event.clientSessionId) ?? {
-      renderer: new ProgressRenderer({ t: this.#t }),
-      announced: false,
-      streaming: false,
-      answerText: "",
-    };
-    this.#progressStateBySession.set(event.clientSessionId, state);
-
+    const state = this.#getOrCreateProgressState(event.clientSessionId);
     if (!state.renderer.isProgressEvent(event)) {
       return;
     }
     state.renderer.takeProgressEvent(event);
 
     // Refresh the same stream message in place, like the feishu adapter
-    // updates its progress card. Go through #buildStreamBody so that a tool
-    // event arriving after the answer started streaming cannot overwrite the
-    // bubble with progress-only content.
+    // updates its progress card. Go through #buildStreamBody so that answer
+    // text already collected for the closing frame cannot be overwritten by a
+    // late tool event.
     const body = this.#buildStreamBody(state);
+    state.lastBody = body;
     const replyToMessageId = this.#lastInboundMessageIdBySession.get(event.clientSessionId);
     await this.#client.sendStreamText(chatId, body, {
       replyToMessageId,
       finish: false,
+      // A superseded step frame is worthless; dropping it beats queueing it
+      // behind an unacked frame and letting the bubble lag seconds behind.
+      nonBlocking: true,
     });
     state.announced = true;
+    this.#startHeartbeat(state, chatId, replyToMessageId);
   }
 
+  /**
+   * Closes the in-place bubble with the final answer.
+   *
+   * WeCom's stream frame carries the whole body every time, so the closing frame
+   * *is* the "clear the bubble" step: whatever step lines were shown before are
+   * replaced by the result. Bodies over the stream ceiling keep the head in the
+   * bubble and deliver the remainder as follow-up messages, so a long answer is
+   * never silently truncated.
+   */
   async #finishProgressMessage(
     chatId: string,
     clientSessionId: string,
     replyToMessageId?: string,
+    overrideText?: string,
   ): Promise<void> {
     const state = this.#progressStateBySession.get(clientSessionId);
-    if (!state || !state.announced || !this.#client) {
+    if (!state) {
       return;
     }
     this.#progressStateBySession.delete(clientSessionId);
+    this.#stopHeartbeat(state);
+    if (!state.announced || !this.#client) {
+      return;
+    }
 
-    const body = this.#buildStreamBody(state, { final: true });
+    const finalText = this.#resolveFinalText(state, overrideText);
+    const body = finalText.length > 0 ? finalText : this.#t("progress.steps.done");
+    const { head, rest } = splitFinalBody(body);
     try {
-      await this.#client.sendStreamText(chatId, body, { replyToMessageId, finish: true });
+      await this.#client.sendStreamText(chatId, head, { replyToMessageId, finish: true });
+      if (rest.length > 0) {
+        this.#logger.info(
+          `final answer exceeded the stream body limit, delivering ${Buffer.byteLength(rest, "utf8")} more bytes as follow-up messages (session=${clientSessionId})`,
+        );
+        for (const chunk of chunkText(rest, MAX_TEXT_CHUNK)) {
+          await this.#client.sendText(chatId, chunk);
+        }
+      }
     } catch (error) {
       // The stream may already have been auto-closed by the server (10 minute
       // limit); the final answer is sent as a separate message regardless.
       this.#logger.warn("failed to finish progress message:", error);
+      if (finalText.length === 0) {
+        return;
+      }
+      for (const chunk of chunkText(finalText, MAX_TEXT_CHUNK)) {
+        try {
+          await this.#client.sendText(chatId, chunk);
+        } catch (sendError) {
+          this.#logger.error("failed to send the final answer after a stream failure:", sendError);
+          break;
+        }
+      }
     }
   }
 
   /**
-   * Renders the in-place bubble body.
+   * Renders the in-progress bubble body.
    *
-   * While the agent is still working (no answer text yet, or a tool is
-   * actually in flight) the body shows the progress lines: the single reply
-   * bubble is the only place the user can see that something is happening, and
-   * a motionless bubble during a long tool call reads as a hang.
-   *
-   * As soon as answer text flows, the body becomes answer-only. Tool names are
-   * implementation detail the user did not ask for, and keeping them above a
-   * growing answer turns every reply into a build log. The progress section
-   * returns only if a later tool call would otherwise freeze the bubble, and
-   * the final frame never carries it.
+   * The default `steps` mode keeps it to a single status line describing what
+   * the agent is doing right now. Tool names, arguments and results stay out:
+   * the bubble is not a build log. Answer text is withheld until the closing
+   * frame so the result lands in one piece. `streamAnswer: true` restores the
+   * older behavior of typing the answer into the bubble as it arrives.
    */
-  #buildStreamBody(state: ProgressState, options?: { final?: boolean }): string {
+  #buildStreamBody(state: ProgressState): string {
     const progress = state.renderer.getCurrentProgress();
     const answer = stripStreamMediaMarkers(state.answerText);
 
-    const showProgress = options?.final !== true && answer.length === 0;
     const sections: string[] = [];
-    if (showProgress && !progress.isEmpty) {
+    if (!progress.isEmpty && (answer.length === 0 || !this.#streamAnswer)) {
       sections.push(progress.markdown);
     }
-    if (answer.length > 0) {
+    if (this.#streamAnswer && answer.length > 0) {
       sections.push(answer);
     }
 
@@ -509,10 +602,109 @@ export class WecomIMAdapter implements IMAdapter {
     return clampStreamBody(sections.join("\n\n"));
   }
 
+  /** The text the closing frame shows: the run's last answer, else everything it wrote. */
+  #resolveFinalText(state: ProgressState, overrideText?: string): string {
+    const explicit = overrideText?.trim();
+    if (explicit) {
+      return stripStreamMediaMarkers(explicit);
+    }
+    const lastMessage = stripStreamMediaMarkers(state.lastMessageText);
+    if (lastMessage.length > 0) {
+      return lastMessage;
+    }
+    return stripStreamMediaMarkers(state.answerText);
+  }
+
+  #getOrCreateProgressState(clientSessionId: string): ProgressState {
+    const existing = this.#progressStateBySession.get(clientSessionId);
+    if (existing) {
+      return existing;
+    }
+    const created = this.#createProgressState();
+    this.#progressStateBySession.set(clientSessionId, created);
+    return created;
+  }
+
+  #createProgressState(): ProgressState {
+    return {
+      renderer: new ProgressRenderer({ t: this.#t, mode: this.#progressMode }),
+      announced: false,
+      streaming: false,
+      answerText: "",
+      lastMessageText: "",
+      startedAt: Date.now(),
+    };
+  }
+
+  /** Progress rendering style for this channel; `log` keeps the per-tool lines. */
+  get #progressMode(): ProgressRendererMode {
+    return this.#config.replyProgress === "log" ? "log" : "steps";
+  }
+
+  /** Whether answer text is typed into the bubble instead of landing on settle. */
+  get #streamAnswer(): boolean {
+    return this.#config.streamAnswer === true;
+  }
+
+  #startHeartbeat(state: ProgressState, chatId: string, replyToMessageId?: string): void {
+    state.chatId = chatId;
+    state.replyToMessageId = replyToMessageId;
+    if (state.heartbeat) {
+      return;
+    }
+    state.heartbeat = setInterval(() => {
+      void this.#sendHeartbeat(state);
+    }, STEP_HEARTBEAT_INTERVAL_MS);
+    state.heartbeat.unref?.();
+  }
+
+  #stopHeartbeat(state: ProgressState): void {
+    if (state.heartbeat) {
+      clearInterval(state.heartbeat);
+      state.heartbeat = undefined;
+    }
+  }
+
   /**
-   * Rewrites the in-place bubble with the cumulative answer text. WeCom
-   * overwrites `stream.content` per frame, so the full body is always sent;
-   * the agent adapter throttles the frame rate.
+   * Keeps a motionless bubble alive during a long step. The body carries the
+   * elapsed time so consecutive frames differ; identical frames are skipped to
+   * avoid pointless traffic.
+   */
+  async #sendHeartbeat(state: ProgressState): Promise<void> {
+    if (!this.#client || !state.announced || !state.chatId) {
+      return;
+    }
+    if (this.#streamAnswer && state.answerText.length > 0) {
+      return;
+    }
+
+    const progress = state.renderer.getCurrentProgress();
+    const subject = progress.isEmpty ? this.#t("client.processing") : progress.markdown;
+    const seconds = Math.max(1, Math.round((Date.now() - state.startedAt) / 1000));
+    const body = this.#t("progress.steps.elapsed", { subject, seconds });
+    if (body === state.lastBody) {
+      return;
+    }
+    state.lastBody = body;
+
+    try {
+      await this.#client.sendStreamText(state.chatId, body, {
+        replyToMessageId: state.replyToMessageId,
+        finish: false,
+        nonBlocking: true,
+      });
+    } catch (error) {
+      this.#logger.debug("failed to send step heartbeat:", error);
+    }
+  }
+
+  /**
+   * Records the cumulative answer text for the run.
+   *
+   * By default nothing is rendered here: the bubble keeps showing the step in
+   * flight and the answer replaces it wholesale in the closing frame, so the
+   * result does not type itself out over the top of the progress line. With
+   * `streamAnswer: true` the older in-place typing behavior is restored.
    */
   async #handleDeltaEvent(
     chatId: string,
@@ -523,31 +715,30 @@ export class WecomIMAdapter implements IMAdapter {
       return;
     }
 
-    const state = this.#progressStateBySession.get(event.clientSessionId) ?? {
-      renderer: new ProgressRenderer({ t: this.#t }),
-      announced: false,
-      streaming: false,
-      answerText: "",
-    };
-    this.#progressStateBySession.set(event.clientSessionId, state);
-
+    const state = this.#getOrCreateProgressState(event.clientSessionId);
     state.streaming = true;
     state.answerText = event.text;
 
-    await this.#client.sendStreamText(chatId, this.#buildStreamBody(state), {
+    if (!this.#streamAnswer) {
+      return;
+    }
+
+    const body = this.#buildStreamBody(state);
+    state.lastBody = body;
+    await this.#client.sendStreamText(chatId, body, {
       replyToMessageId,
       finish: false,
+      nonBlocking: true,
     });
     state.announced = true;
   }
 
   #resetProgressState(clientSessionId: string): void {
-    this.#progressStateBySession.set(clientSessionId, {
-      renderer: new ProgressRenderer({ t: this.#t }),
-      announced: false,
-      streaming: false,
-      answerText: "",
-    });
+    const previous = this.#progressStateBySession.get(clientSessionId);
+    if (previous) {
+      this.#stopHeartbeat(previous);
+    }
+    this.#progressStateBySession.set(clientSessionId, this.#createProgressState());
   }
 
   async #handleScheduleRun(

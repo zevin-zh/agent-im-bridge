@@ -179,10 +179,13 @@ describe("WecomIMAdapter", () => {
       .mockRejectedValueOnce(new Error("field validation failed"))
       .mockResolvedValueOnce(undefined);
 
+    // A terminal error replies with its own text message; when that send fails
+    // the user gets the localized delivery-failure notice.
     await adapter.input({
-      type: "assistant.message",
+      type: "error",
       clientSessionId: "wecom:group:group_zh",
-      text: "reply body",
+      kind: "agent.run.failed",
+      detail: "boom",
     });
 
     await waitFor(() => fakeClientState.sendText.mock.calls.length === 2);
@@ -256,7 +259,7 @@ describe("WecomIMAdapter", () => {
     });
     await waitFor(() => fakeClientState.sendText.mock.calls.length === 1);
 
-    expect(fakeClientState.sendStreamText).toHaveBeenLastCalledWith("user_1", "Processing...", {
+    expect(fakeClientState.sendStreamText).toHaveBeenLastCalledWith("user_1", "Done.", {
       replyToMessageId: "msg-status",
       finish: true,
     });
@@ -320,7 +323,7 @@ describe("WecomIMAdapter", () => {
     });
   });
 
-  it("finishes the progress message and sends chunked replies as separate messages", async () => {
+  it("commits the whole answer into the bubble instead of posting a second message", async () => {
     const adapter = new WecomIMAdapter(
       {
         botId: "bot-id",
@@ -330,28 +333,6 @@ describe("WecomIMAdapter", () => {
       createLogger("test"),
     );
     const onOutput = vi.fn(async (_event: ClientOutputEvent) => {});
-    const callOrder: string[] = [];
-    let inFlight = 0;
-    let maxInFlight = 0;
-
-    const track = async (label: string) => {
-      inFlight += 1;
-      maxInFlight = Math.max(maxInFlight, inFlight);
-      callOrder.push(label);
-      await Promise.resolve();
-      inFlight -= 1;
-    };
-
-    fakeClientState.sendStreamText.mockImplementation(
-      async (_chatId: string, text: string, options?: { replyToMessageId?: string; finish?: boolean }) => {
-        await track(`stream:${text}:${options?.finish ?? false}`);
-      },
-    );
-    fakeClientState.sendText.mockImplementation(
-      async (_chatId: string, text: string, replyToMessageId?: string) => {
-        await track(`text:${text.length}:${replyToMessageId ?? "none"}`);
-      },
-    );
 
     await adapter.start(onOutput);
     await fakeClientState.onMessage?.({
@@ -364,29 +345,65 @@ describe("WecomIMAdapter", () => {
 
     fakeClientState.sendStreamText.mockClear();
     fakeClientState.sendText.mockClear();
-    callOrder.length = 0;
 
-    const longText = `${"a".repeat(3999)} ${"b".repeat(50)}`;
+    const answer = `${"a".repeat(3999)} ${"b".repeat(50)}`;
     await adapter.input({
       type: "assistant.message",
       clientSessionId: "wecom:group:group_1",
-      text: longText,
+      text: answer,
     });
 
-    await waitFor(() => fakeClientState.sendText.mock.calls.length === 2);
+    await waitFor(() =>
+      fakeClientState.sendStreamText.mock.calls.some((call) => call[2]?.finish === true),
+    );
 
     expect(fakeClientState.sendStreamText).toHaveBeenCalledTimes(1);
-    expect(fakeClientState.sendStreamText).toHaveBeenCalledWith("group_1", "Processing...", {
+    expect(fakeClientState.sendStreamText).toHaveBeenCalledWith("group_1", answer, {
       replyToMessageId: "msg-3",
       finish: true,
     });
-    expect(fakeClientState.sendText).toHaveBeenCalledTimes(2);
-    expect(fakeClientState.sendText.mock.calls[0]?.[1]).toHaveLength(4000);
-    expect(fakeClientState.sendText.mock.calls[0]?.[2]).toBe("msg-3");
-    expect(fakeClientState.sendText.mock.calls[1]?.[1]).toHaveLength(50);
-    expect(fakeClientState.sendText.mock.calls[1]?.[2]).toBeUndefined();
-    expect(maxInFlight).toBe(1);
-    expect(callOrder).toEqual(["stream:Processing...:true", "text:4000:msg-3", "text:50:none"]);
+    // The bubble *is* the answer: no follow-up message.
+    expect(fakeClientState.sendText).not.toHaveBeenCalled();
+  });
+
+  it("keeps a body over the stream ceiling in the bubble and follows up with the remainder", async () => {
+    const adapter = new WecomIMAdapter(
+      {
+        botId: "bot-id",
+        secret: "secret",
+        requireMentionInGroup: true,
+      },
+      createLogger("test"),
+    );
+    const onOutput = vi.fn(async (_event: ClientOutputEvent) => {});
+
+    await adapter.start(onOutput);
+    await fakeClientState.onMessage?.({
+      chatId: "group_1",
+      chatType: "group",
+      messageId: "msg-overflow",
+      text: "hello",
+      mentionedBot: true,
+    });
+
+    fakeClientState.sendStreamText.mockClear();
+    fakeClientState.sendText.mockClear();
+
+    const head = "a".repeat(16000);
+    const tail = "b".repeat(2000);
+    await adapter.input({
+      type: "assistant.message",
+      clientSessionId: "wecom:group:group_1",
+      text: `${head}\n${tail}`,
+    });
+
+    await waitFor(() => fakeClientState.sendText.mock.calls.length === 1);
+
+    const finished = fakeClientState.sendStreamText.mock.calls.find((call) => call[2]?.finish === true);
+    expect(finished?.[1]).toBe(head);
+    expect(fakeClientState.sendText).toHaveBeenCalledTimes(1);
+    expect(fakeClientState.sendText.mock.calls[0]?.[1]).toBe(tail);
+    expect(fakeClientState.sendText.mock.calls[0]?.[2]).toBeUndefined();
   });
 
   it("notifies the user when delivery fails", async () => {
@@ -415,9 +432,10 @@ describe("WecomIMAdapter", () => {
       .mockResolvedValueOnce(undefined);
 
     await adapter.input({
-      type: "assistant.message",
+      type: "error",
       clientSessionId: "wecom:group:group_1",
-      text: "reply body",
+      kind: "agent.run.failed",
+      detail: "boom",
     });
 
     await waitFor(() => fakeClientState.sendText.mock.calls.length === 2);
@@ -455,9 +473,10 @@ describe("WecomIMAdapter", () => {
     fakeClientState.sendText.mockRejectedValue(new Error("WebSocket not connected"));
 
     await adapter.input({
-      type: "assistant.message",
+      type: "error",
       clientSessionId: "wecom:group:group_1",
-      text: "reply body",
+      kind: "agent.run.failed",
+      detail: "boom",
     });
 
     await waitFor(() => fakeClientState.sendText.mock.calls.length === 1);
@@ -496,7 +515,7 @@ describe("WecomIMAdapter", () => {
     });
 
     await waitFor(() => fakeClientState.sendText.mock.calls.length === 1);
-    expect(fakeClientState.sendStreamText).toHaveBeenCalledWith("user_1", "Processing...", {
+    expect(fakeClientState.sendStreamText).toHaveBeenCalledWith("user_1", "Done.", {
       replyToMessageId: "msg-run-error",
       finish: true,
     });
@@ -578,7 +597,7 @@ describe("WecomIMAdapter", () => {
     );
   });
 
-  it("refreshes the same progress stream using the same body text as feishu", async () => {
+  it("renders one semantic step line instead of the tool log", async () => {
     vi.useFakeTimers();
 
     const adapter = new WecomIMAdapter(
@@ -630,13 +649,23 @@ describe("WecomIMAdapter", () => {
 
     await waitFor(() => fakeClientState.sendStreamText.mock.calls.length === 3);
 
+    expect(fakeClientState.sendStreamText.mock.calls[0]?.[1]).toBe("Fetching web content");
+    expect(fakeClientState.sendStreamText.mock.calls[1]?.[1]).toBe("Running a command");
     expect(fakeClientState.sendStreamText.mock.calls[2]?.[1]).toBe(
-      ["- ⏳ web_search", "- ✅ bash", "- ❌ bash"].join("\n"),
+      "The previous step failed, continuing.",
     );
     expect(fakeClientState.sendStreamText.mock.calls[2]?.[2]).toEqual({
       replyToMessageId: "msg-progress-1",
       finish: false,
+      nonBlocking: true,
     });
+
+    // Tool names never reach the bubble: the user sees what is happening, not
+    // which tool the agent picked.
+    for (const call of fakeClientState.sendStreamText.mock.calls) {
+      expect(call[1]).not.toContain("web_search");
+      expect(call[1]).not.toContain("bash");
+    }
   });
 
   it("shows a collapsed-updates summary while refreshing the same progress stream", async () => {
@@ -647,6 +676,7 @@ describe("WecomIMAdapter", () => {
         botId: "bot-id",
         secret: "secret",
         requireMentionInGroup: true,
+        replyProgress: "log",
       },
       createLogger("test"),
     );
@@ -692,6 +722,7 @@ describe("WecomIMAdapter", () => {
     expect(fakeClientState.sendStreamText.mock.calls[11]?.[2]).toEqual({
       replyToMessageId: "msg-collapse",
       finish: false,
+      nonBlocking: true,
     });
   });
 
@@ -1134,12 +1165,65 @@ describe("WecomIMAdapter", () => {
     );
   });
 
-  it("streams assistant.delta frames into the same reply bubble", async () => {
+  it("holds answer text back from the bubble until the run settles", async () => {
     const adapter = new WecomIMAdapter(
       {
         botId: "bot-id",
         secret: "secret",
         requireMentionInGroup: true,
+      },
+      createLogger("test"),
+    );
+
+    await adapter.start(async () => {});
+    await fakeClientState.onMessage?.({
+      chatId: "user_1",
+      chatType: "dm",
+      messageId: "msg-delta",
+      text: "hello",
+      mentionedBot: false,
+    });
+    fakeClientState.sendStreamText.mockClear();
+
+    await adapter.input({
+      type: "assistant.delta",
+      clientSessionId: "wecom:dm:user_1",
+      agentSessionId: "agent-1",
+      text: "Hel",
+    });
+    await adapter.input({
+      type: "assistant.delta",
+      clientSessionId: "wecom:dm:user_1",
+      agentSessionId: "agent-1",
+      text: "Hello world",
+    });
+
+    // Answer text is collected, not rendered: the bubble keeps showing the
+    // step so the result can land in one piece on settle.
+    expect(fakeClientState.sendStreamText).not.toHaveBeenCalled();
+
+    await adapter.input({
+      type: "agent.run.settled",
+      clientSessionId: "wecom:dm:user_1",
+      agentSessionId: "agent-1",
+      aborted: false,
+    });
+
+    await waitFor(() =>
+      fakeClientState.sendStreamText.mock.calls.some((call) => call[2]?.finish === true),
+    );
+    const finished = fakeClientState.sendStreamText.mock.calls.find((call) => call[2]?.finish === true);
+    expect(finished?.[1]).toBe("Hello world");
+    expect(fakeClientState.sendText).not.toHaveBeenCalled();
+  });
+
+  it("streams answer text into the bubble when streamAnswer is enabled", async () => {
+    const adapter = new WecomIMAdapter(
+      {
+        botId: "bot-id",
+        secret: "secret",
+        requireMentionInGroup: true,
+        streamAnswer: true,
       },
       createLogger("test"),
     );
@@ -1174,6 +1258,7 @@ describe("WecomIMAdapter", () => {
     expect(fakeClientState.sendStreamText.mock.calls[1]?.[2]).toEqual({
       replyToMessageId: "msg-delta",
       finish: false,
+      nonBlocking: true,
     });
     expect(fakeClientState.sendText).not.toHaveBeenCalled();
   });
@@ -1231,7 +1316,7 @@ describe("WecomIMAdapter", () => {
     expect(finished?.[2]).toEqual({ replyToMessageId: "msg-delta-settle", finish: true });
   });
 
-  it("drops progress lines once the answer streams and hides half-received MEDIA markers", async () => {
+  it("replaces every step line with the answer and hides half-received MEDIA markers", async () => {
     const adapter = new WecomIMAdapter(
       {
         botId: "bot-id",
@@ -1258,10 +1343,9 @@ describe("WecomIMAdapter", () => {
       toolName: "bash",
       text: undefined,
     });
-    // Before any answer text exists the bubble is the only sign of life, so
-    // tool activity is shown.
+    // While the agent works the bubble is the only sign of life.
     await waitFor(() => fakeClientState.sendStreamText.mock.calls.length === 1);
-    expect(fakeClientState.sendStreamText.mock.calls[0]?.[1]).toBe("- ⏳ bash");
+    expect(fakeClientState.sendStreamText.mock.calls[0]?.[1]).toBe("Running a command");
 
     await adapter.input({
       type: "assistant.delta",
@@ -1269,13 +1353,21 @@ describe("WecomIMAdapter", () => {
       agentSessionId: "agent-1",
       text: "Done. MEDIA:/tmp/report.p",
     });
+    await adapter.input({
+      type: "agent.run.settled",
+      clientSessionId: "wecom:dm:user_1",
+      agentSessionId: "agent-1",
+      aborted: false,
+    });
 
-    await waitFor(() => fakeClientState.sendStreamText.mock.calls.length === 2);
+    await waitFor(() =>
+      fakeClientState.sendStreamText.mock.calls.some((call) => call[2]?.finish === true),
+    );
 
-    // Answer text arrived: tool lines and the half-received MEDIA marker are
-    // both gone, leaving only what the user asked for.
-    const body = fakeClientState.sendStreamText.mock.calls[1]?.[1] as string;
-    expect(body).toBe("Done.");
+    // The closing frame overwrites the bubble: step lines and the half-received
+    // MEDIA marker are both gone, leaving only what the user asked for.
+    const finished = fakeClientState.sendStreamText.mock.calls.find((call) => call[2]?.finish === true);
+    expect(finished?.[1]).toBe("Done.");
   });
 
   it("never repeats progress lines in the final frame", async () => {
