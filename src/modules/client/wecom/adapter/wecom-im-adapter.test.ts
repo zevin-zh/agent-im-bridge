@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ClientOutputEvent, WecomInboundMessage } from "../../../../types";
 import { createLogger } from "../../../../core/logger";
+import { getTranslator } from "../../../../i18n";
 import { WecomIMAdapter } from "./wecom-im-adapter";
 
 type FakeClientInstance = {
@@ -87,6 +88,31 @@ async function waitFor(condition: () => boolean, attempts = 20): Promise<void> {
   throw new Error("condition not met in time");
 }
 
+const enTranslator = getTranslator("en-US");
+const zhTranslator = getTranslator("zh-CN");
+
+/**
+ * Every step line lives in an `a|b|c` pool and the pick is random, so tests
+ * assert pool membership instead of a specific line.
+ */
+function isStepOfPoolIn(
+  translator: ReturnType<typeof getTranslator>,
+  key: string,
+  value: unknown,
+): boolean {
+  if (typeof value !== "string") {
+    return false;
+  }
+  return translator(key)
+    .split("|")
+    .map((entry) => entry.trim())
+    .includes(value);
+}
+
+function isStepOfPool(key: string, value: unknown): boolean {
+  return isStepOfPoolIn(enTranslator, key, value);
+}
+
 describe("WecomIMAdapter", () => {
   afterEach(() => {
     resetFakeClient();
@@ -142,7 +168,10 @@ describe("WecomIMAdapter", () => {
       clientSessionId: "wecom:dm:user_1",
       text: "hello",
     });
-    expect(fakeClientState.sendStreamText).toHaveBeenCalledWith("user_1", "Processing...", {
+    expect(isStepOfPool("progress.steps.pool", fakeClientState.sendStreamText.mock.calls[0]?.[1])).toBe(
+      true,
+    );
+    expect(fakeClientState.sendStreamText.mock.calls[0]?.[2]).toEqual({
       replyToMessageId: "msg-2",
       finish: false,
     });
@@ -169,7 +198,10 @@ describe("WecomIMAdapter", () => {
       mentionedBot: true,
     });
 
-    expect(fakeClientState.sendStreamText).toHaveBeenCalledWith("group_zh", "正在处理中...", {
+    expect(
+      isStepOfPoolIn(zhTranslator, "progress.steps.pool", fakeClientState.sendStreamText.mock.calls[0]?.[1]),
+    ).toBe(true);
+    expect(fakeClientState.sendStreamText.mock.calls[0]?.[2]).toEqual({
       replyToMessageId: "msg-zh-1",
       finish: false,
     });
@@ -247,7 +279,10 @@ describe("WecomIMAdapter", () => {
       type: "command.session.status",
       clientSessionId: "wecom:dm:user_1",
     });
-    expect(fakeClientState.sendStreamText).toHaveBeenCalledWith("user_1", "Processing...", {
+    expect(isStepOfPool("progress.steps.pool", fakeClientState.sendStreamText.mock.calls[0]?.[1])).toBe(
+      true,
+    );
+    expect(fakeClientState.sendStreamText.mock.calls[0]?.[2]).toEqual({
       replyToMessageId: "msg-status",
       finish: false,
     });
@@ -259,10 +294,13 @@ describe("WecomIMAdapter", () => {
     });
     await waitFor(() => fakeClientState.sendText.mock.calls.length === 1);
 
-    expect(fakeClientState.sendStreamText).toHaveBeenLastCalledWith("user_1", "Done.", {
+    expect(fakeClientState.sendStreamText).toHaveBeenLastCalledWith("user_1", expect.any(String), {
       replyToMessageId: "msg-status",
       finish: true,
     });
+    expect(isStepOfPool("progress.steps.done", fakeClientState.sendStreamText.mock.calls.at(-1)?.[1])).toBe(
+      true,
+    );
     expect(fakeClientState.sendText).toHaveBeenCalledWith(
       "user_1",
       expect.stringContaining("Current session status"),
@@ -515,10 +553,13 @@ describe("WecomIMAdapter", () => {
     });
 
     await waitFor(() => fakeClientState.sendText.mock.calls.length === 1);
-    expect(fakeClientState.sendStreamText).toHaveBeenCalledWith("user_1", "Done.", {
+    expect(fakeClientState.sendStreamText).toHaveBeenCalledWith("user_1", expect.any(String), {
       replyToMessageId: "msg-run-error",
       finish: true,
     });
+    expect(isStepOfPool("progress.steps.done", fakeClientState.sendStreamText.mock.calls.at(-1)?.[1])).toBe(
+      true,
+    );
     expect(fakeClientState.sendText).toHaveBeenCalledWith(
       "user_1",
       expect.stringContaining("Provider connection failed"),
@@ -649,10 +690,14 @@ describe("WecomIMAdapter", () => {
 
     await waitFor(() => fakeClientState.sendStreamText.mock.calls.length === 3);
 
-    expect(fakeClientState.sendStreamText.mock.calls[0]?.[1]).toBe("Fetching web content");
-    expect(fakeClientState.sendStreamText.mock.calls[1]?.[1]).toBe("Running a command");
-    expect(fakeClientState.sendStreamText.mock.calls[2]?.[1]).toBe(
-      "The previous step failed, continuing.",
+    expect(isStepOfPool("progress.steps.pool", fakeClientState.sendStreamText.mock.calls[0]?.[1])).toBe(
+      true,
+    );
+    expect(isStepOfPool("progress.steps.pool", fakeClientState.sendStreamText.mock.calls[1]?.[1])).toBe(
+      true,
+    );
+    expect(isStepOfPool("progress.steps.failed", fakeClientState.sendStreamText.mock.calls[2]?.[1])).toBe(
+      true,
     );
     expect(fakeClientState.sendStreamText.mock.calls[2]?.[2]).toEqual({
       replyToMessageId: "msg-progress-1",
@@ -756,15 +801,16 @@ describe("WecomIMAdapter", () => {
       text: undefined,
     });
     await waitFor(() => fakeClientState.sendStreamText.mock.calls.length === 1);
-    expect(fakeClientState.sendStreamText.mock.calls[0]?.[1]).toBe("Running a command");
+    const step = fakeClientState.sendStreamText.mock.calls[0]?.[1] as string;
+    expect(isStepOfPool("progress.steps.pool", step)).toBe(true);
 
     await vi.advanceTimersByTimeAsync(5000);
     await waitFor(() => fakeClientState.sendStreamText.mock.calls.length === 2);
-    expect(fakeClientState.sendStreamText.mock.calls[1]?.[1]).toBe("Running a command.");
+    expect(fakeClientState.sendStreamText.mock.calls[1]?.[1]).toBe(`${step}.`);
 
     await vi.advanceTimersByTimeAsync(5000);
     await waitFor(() => fakeClientState.sendStreamText.mock.calls.length === 3);
-    expect(fakeClientState.sendStreamText.mock.calls[2]?.[1]).toBe("Running a command..");
+    expect(fakeClientState.sendStreamText.mock.calls[2]?.[1]).toBe(`${step}..`);
 
     // Nothing on screen reports a duration.
     for (const call of fakeClientState.sendStreamText.mock.calls) {
@@ -1391,7 +1437,10 @@ describe("WecomIMAdapter", () => {
     });
     // While the agent works the bubble is the only sign of life.
     await waitFor(() => fakeClientState.sendStreamText.mock.calls.length === 1);
-    expect(fakeClientState.sendStreamText.mock.calls[0]?.[1]).toBe("Running a command");
+    expect(isStepOfPool("progress.steps.pool", fakeClientState.sendStreamText.mock.calls[0]?.[1])).toBe(
+      true,
+    );
+    expect(fakeClientState.sendStreamText.mock.calls[0]?.[1]).not.toContain("bash");
 
     await adapter.input({
       type: "assistant.delta",

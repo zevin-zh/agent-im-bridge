@@ -12,7 +12,7 @@ import type {
 import { formatSendFailureNotice, getTranslatorForCommon, type Translator } from "../../../../i18n";
 import { createLogger, type Logger } from "../../../../core/logger";
 import { isCompletedCommandResponse, isTerminalAgentError } from "../../utils/error-events";
-import { ProgressRenderer, type ProgressRendererMode } from "../../utils/progress-renderer";
+import { pickStepVariant, ProgressRenderer, type ProgressRendererMode } from "../../utils/progress-renderer";
 import {
   formatQueueHereReply,
   formatScheduleHereReply,
@@ -81,6 +81,8 @@ type ProgressState = {
   heartbeatTick: number;
   /** Suppresses a heartbeat frame that would repeat the body already sent. */
   lastBody?: string;
+  /** The opening line picked for this run; the heartbeat keeps it stable. */
+  announceText?: string;
 };
 
 /** Strips `MEDIA:` directives (including a half-received trailing one) for display. */
@@ -479,12 +481,14 @@ export class WecomIMAdapter implements IMAdapter {
       return;
     }
 
-    await this.#client.sendStreamText(chatId, this.#t("client.processing"), {
+    const opening = pickStepVariant(this.#t("progress.steps.pool"));
+    await this.#client.sendStreamText(chatId, opening, {
       replyToMessageId: messageId,
       finish: false,
     });
     state.announced = true;
-    state.lastBody = this.#t("client.processing");
+    state.lastBody = opening;
+    state.announceText = opening;
     this.#startHeartbeat(state, chatId, messageId);
   }
 
@@ -546,7 +550,8 @@ export class WecomIMAdapter implements IMAdapter {
     }
 
     const finalText = this.#resolveFinalText(state, overrideText);
-    const body = finalText.length > 0 ? finalText : this.#t("progress.steps.done");
+    const body =
+      finalText.length > 0 ? finalText : pickStepVariant(this.#t("progress.steps.done"));
     const { head, rest } = splitFinalBody(body);
     try {
       await this.#client.sendStreamText(chatId, head, { replyToMessageId, finish: true });
@@ -598,7 +603,7 @@ export class WecomIMAdapter implements IMAdapter {
     }
 
     if (sections.length === 0) {
-      return this.#t("client.processing");
+      return state.announceText ?? pickStepVariant(this.#t("progress.steps.pool"));
     }
     return clampStreamBody(sections.join("\n\n"));
   }
@@ -680,7 +685,9 @@ export class WecomIMAdapter implements IMAdapter {
     }
 
     const progress = state.renderer.getCurrentProgress();
-    const subject = progress.isEmpty ? this.#t("client.processing") : progress.markdown;
+    const subject = progress.isEmpty
+      ? (state.announceText ?? pickStepVariant(this.#t("progress.steps.pool")))
+      : progress.markdown;
     const dots = (state.heartbeatTick % 3) + 1;
     state.heartbeatTick += 1;
     const body = `${subject}${".".repeat(dots)}`;

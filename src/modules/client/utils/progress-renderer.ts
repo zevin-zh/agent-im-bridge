@@ -14,6 +14,27 @@ export interface ProgressRendererOptions {
    *   a status line rather than as a build log.
    */
   mode?: ProgressRendererMode;
+  /**
+   * Random source for picking a step variant. Injectable so tests can pin a
+   * specific line instead of asserting against the whole pool.
+   */
+  random?: () => number;
+}
+
+/**
+ * Picks one variant out of an `a|b|c` pool. Shared with the adapter, which
+ * needs the same treatment for the closing line of a command response.
+ */
+export function pickStepVariant(raw: string, random: () => number = Math.random): string {
+  const variants = raw
+    .split("|")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  if (variants.length === 0) {
+    return raw;
+  }
+  const index = Math.min(variants.length - 1, Math.max(0, Math.floor(random() * variants.length)));
+  return variants[index] ?? variants[0] ?? raw;
 }
 
 export type ProgressRendererMode = "log" | "steps";
@@ -41,134 +62,6 @@ const DEFAULT_COLLAPSE_THRESHOLD = 10;
 const MAX_TOOL_LABEL_DISPLAY_LENGTH = 24;
 
 /**
- * Tool families behind the `steps` mode wording. Matched on the lowercased tool
- * name, exact first and then by prefix so `lsp_hover`, `mcp_jenkins__*` and
- * friends still land on a sensible family.
- */
-const STEP_KEY_BY_TOOL_NAME: Record<string, string> = {
-  bash: "progress.steps.command",
-  shell: "progress.steps.command",
-  exec: "progress.steps.command",
-  terminal: "progress.steps.command",
-  run_command: "progress.steps.command",
-  execute: "progress.steps.command",
-  read: "progress.steps.read",
-  read_file: "progress.steps.read",
-  ls: "progress.steps.read",
-  list: "progress.steps.read",
-  find: "progress.steps.read",
-  glob: "progress.steps.read",
-  write: "progress.steps.write",
-  write_file: "progress.steps.write",
-  edit: "progress.steps.write",
-  multi_edit: "progress.steps.write",
-  apply_patch: "progress.steps.write",
-  grep: "progress.steps.search",
-  search: "progress.steps.search",
-  ripgrep: "progress.steps.search",
-  web_search: "progress.steps.fetch",
-  fetch_content: "progress.steps.fetch",
-  fetch: "progress.steps.fetch",
-  web_fetch: "progress.steps.fetch",
-  browser: "progress.steps.fetch",
-};
-
-const STEP_KEY_BY_TOOL_PREFIX: Array<[prefix: string, key: string]> = [
-  ["lsp_", "progress.steps.read"],
-  ["read_", "progress.steps.read"],
-  ["get_", "progress.steps.read"],
-  ["list_", "progress.steps.read"],
-  ["write_", "progress.steps.write"],
-  ["edit_", "progress.steps.write"],
-  ["search_", "progress.steps.search"],
-  ["find_", "progress.steps.search"],
-  ["web_", "progress.steps.fetch"],
-  ["fetch_", "progress.steps.fetch"],
-  ["run_", "progress.steps.command"],
-  ["exec_", "progress.steps.command"],
-];
-
-/** Tools whose input carries a shell command worth classifying. */
-const SHELL_TOOL_NAME_PATTERN =
-  /^(?:bash|shell|exec|execute|terminal|command|run_command|run_shell|local_shell)$/;
-
-/**
- * Shell commands are classified by what they do rather than shown verbatim:
- * "running tests" tells the user more than "running a command" without turning
- * the bubble into a terminal. Order matters — the first match wins.
- */
-const COMMAND_STEP_RULES: Array<[pattern: RegExp, key: string]> = [
-  [
-    /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test\b|\b(?:pytest|vitest|jest|mocha|phpunit)\b|\b(?:go|cargo|make)\s+test\b/,
-    "progress.steps.tests",
-  ],
-  [
-    /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?build\b|\b(?:tsup|tsc|webpack|rollup|vite\s+build|make|cargo\s+build|mvn|gradle)\b/,
-    "progress.steps.build",
-  ],
-  [
-    /\b(?:npm|pnpm|yarn|bun)\s+(?:install|add|i)\b|\bpip3?\s+install\b|\bapt(?:-get)?\s+install\b|\bcargo\s+add\b|\bgo\s+get\b/,
-    "progress.steps.install",
-  ],
-  [/\bgit\s+(?:commit|push|tag|merge|rebase|cherry-pick|am)\b/, "progress.steps.commit"],
-  [/\bgit\b/, "progress.steps.git"],
-  [
-    /\b(?:systemctl|journalctl|service|docker|docker-compose|kubectl|pm2|supervisorctl)\b/,
-    "progress.steps.service",
-  ],
-  [/\b(?:ssh|scp|sftp|rsync)\b/, "progress.steps.remote"],
-  [/\b(?:curl|wget|ping|nc|telnet)\b/, "progress.steps.network"],
-  [/\b(?:tar|zip|unzip|gzip|gunzip|7z)\b/, "progress.steps.archive"],
-  [/\b(?:ls|cat|head|tail|less|more|find|stat|wc|tree|du|df)\b/, "progress.steps.inspect"],
-  [/\b(?:rm|cp|mv|mkdir|rmdir|touch|ln)\b/, "progress.steps.files"],
-  [/\b(?:chmod|chown|chgrp)\b/, "progress.steps.permission"],
-  [/\b(?:ps|top|htop|kill|pkill|killall|free|uptime)\b/, "progress.steps.process"],
-  [/\b(?:sed|awk|sort|uniq|cut|tr|xargs|jq)\b/, "progress.steps.text"],
-  [/\b(?:python3?|node|deno|bun|bash|sh|zsh|ruby|perl)\b/, "progress.steps.script"],
-];
-
-function commandTextOf(toolName: string, toolInput: unknown): string | undefined {
-  if (!SHELL_TOOL_NAME_PATTERN.test(toolName.trim().toLowerCase())) {
-    return undefined;
-  }
-  if (!toolInput || typeof toolInput !== "object" || Array.isArray(toolInput)) {
-    return undefined;
-  }
-  const input = toolInput as Record<string, unknown>;
-  for (const key of ["command", "cmd", "script"]) {
-    const value = input[key];
-    if (typeof value === "string" && value.trim().length > 0) {
-      return value.trim();
-    }
-  }
-  return undefined;
-}
-
-function stepKeyForCommand(command: string): string | undefined {
-  const normalized = command.toLowerCase();
-  for (const [pattern, key] of COMMAND_STEP_RULES) {
-    if (pattern.test(normalized)) {
-      return key;
-    }
-  }
-  return undefined;
-}
-
-function stepKeyForToolName(toolName: string): string {
-  const normalized = toolName.trim().toLowerCase();
-  const exact = STEP_KEY_BY_TOOL_NAME[normalized];
-  if (exact) {
-    return exact;
-  }
-  for (const [prefix, key] of STEP_KEY_BY_TOOL_PREFIX) {
-    if (normalized.startsWith(prefix)) {
-      return key;
-    }
-  }
-  return "progress.steps.generic";
-}
-
-/**
  * Accumulates agent progress events (tool running/done/error, session
  * compacting, ...) for a single conversation turn and renders them as a
  * markdown string. One instance tracks one turn's worth of progress;
@@ -191,17 +84,20 @@ export class ProgressRenderer {
   readonly #collapseThreshold: number;
   readonly #t: Translator;
   readonly #mode: ProgressRendererMode;
+  readonly #random: () => number;
   #entries = new Map<string, ProgressEntry>();
   #order: string[] = [];
   #status = "running";
   #stepSubject: string | null = null;
   #stepCount = 0;
-  #stepFailed = false;
+  /** One line per tool call, so a step does not reshuffle between running/done. */
+  #stepTextByCallId = new Map<string, string>();
 
   constructor(options: ProgressRendererOptions = {}) {
     this.#collapseThreshold = options.collapseThreshold ?? DEFAULT_COLLAPSE_THRESHOLD;
     this.#t = options.t ?? getTranslator("en-US");
     this.#mode = options.mode ?? "log";
+    this.#random = options.random ?? Math.random;
   }
 
   /**
@@ -222,8 +118,10 @@ export class ProgressRenderer {
   takeProgressEvent(event: ProgressEvent): void {
     if (this.#mode === "steps") {
       this.#stepCount += 1;
-      this.#stepSubject = this.#stepSubjectFor(event);
-      this.#stepFailed = event.type === "assistant.tool.error";
+      this.#stepSubject =
+        event.type === "assistant.tool.error"
+          ? this.#pick("progress.steps.failed")
+          : this.#stepSubjectFor(event);
       this.#status = this.#progressStatus(event);
       return;
     }
@@ -279,31 +177,38 @@ export class ProgressRenderer {
     return this.#order.slice(-this.#collapseThreshold);
   }
 
-  /** The single line a `steps`-mode bubble shows: the step in flight, or a failure note. */
+  /** The single line a `steps`-mode bubble shows. */
   #currentStepLine(): string {
-    if (this.#stepFailed) {
-      return this.#t("progress.steps.failed");
-    }
-    return this.#stepSubject ?? this.#t("progress.steps.generic");
+    return this.#stepSubject ?? this.#pick("progress.steps.pool");
+  }
+
+  #pick(key: string): string {
+    return pickStepVariant(this.#t(key), this.#random);
   }
 
   /**
-   * Maps a progress event onto a user-facing step description. Tool names,
-   * arguments and results stay out of it on purpose: the bubble reports what
-   * the agent is doing, not which tool it reached for.
+   * A deliberately unrelated line from the pool: the bubble is a loading screen,
+   * not a status report, so nothing here is derived from the tool, its arguments
+   * or its result.
+   *
+   * The line is pinned per tool call. A call emits running/update/done events,
+   * and reshuffling on each of them would make the bubble flicker; a new call
+   * draws a new line.
    */
   #stepSubjectFor(event: ProgressEvent): string {
-    if (event.type === "session.compacting") {
-      return this.#t("progress.steps.compact");
-    }
-    const command = commandTextOf(event.toolName, event.toolInput);
-    if (command) {
-      const commandKey = stepKeyForCommand(command);
-      if (commandKey) {
-        return this.#t(commandKey);
+    const toolCallId = event.type === "session.compacting" ? undefined : event.toolCallId;
+    if (toolCallId) {
+      const cached = this.#stepTextByCallId.get(toolCallId);
+      if (cached) {
+        return cached;
       }
     }
-    return this.#t(stepKeyForToolName(event.toolName));
+
+    const text = this.#pick("progress.steps.pool");
+    if (toolCallId) {
+      this.#stepTextByCallId.set(toolCallId, text);
+    }
+    return text;
   }
 
   #appendLineEntry(line: string): void {

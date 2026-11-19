@@ -268,15 +268,19 @@ describe("ProgressRenderer", () => {
     );
   });
 
-  it("renders a single semantic step in steps mode, without tool names or labels", () => {
-    const renderer = new ProgressRenderer({ mode: "steps", t: getTranslator("en-US") });
+  it("renders one randomized line from the pool in steps mode", () => {
+    const renderer = new ProgressRenderer({
+      mode: "steps",
+      t: getTranslator("en-US"),
+      random: () => 0,
+    });
     renderer.takeProgressEvent({
       type: "assistant.tool.running",
       clientSessionId: "s1",
       toolName: "bash",
       toolLabel: "rm -rf /tmp/cache",
     });
-    expect(renderer.getCurrentProgress().markdown).toBe("Running a command");
+    expect(renderer.getCurrentProgress().markdown).toBe("loosening the thread pool");
 
     renderer.takeProgressEvent({
       type: "assistant.tool.done",
@@ -284,14 +288,48 @@ describe("ProgressRenderer", () => {
       toolName: "read",
       toolLabel: "/etc/hosts",
     });
-    // Only the current step survives: no history, no arguments.
     const progress = renderer.getCurrentProgress();
-    expect(progress.markdown).toBe("Reading files");
+    // Pool membership, not a classification: the line has nothing to do with either tool.
+    expect(progress.markdown).toBe("loosening the thread pool");
     expect(progress.collapsedCount).toBe(0);
   });
 
+  it("never derives the line from the tool name, input or result", () => {
+    const renderer = new ProgressRenderer({
+      mode: "steps",
+      t: getTranslator("en-US"),
+      random: () => 0,
+    });
+    const inputs: Array<{ toolName: string; toolInput: Record<string, unknown> }> = [
+      { toolName: "bash", toolInput: { command: "rm -rf /important" } },
+      { toolName: "read", toolInput: { path: "/etc/passwd" } },
+      { toolName: "mcp__jenkins__trigger_build", toolInput: { job: "OMOS" } },
+      { toolName: "weird_tool", toolInput: { secret: "hunter2" } },
+    ];
+
+    for (const [index, entry] of inputs.entries()) {
+      renderer.takeProgressEvent({
+        type: "assistant.tool.running",
+        clientSessionId: "s1",
+        toolName: entry.toolName,
+        toolInput: entry.toolInput,
+        toolCallId: `call-${index}`,
+      });
+      const markdown = renderer.getCurrentProgress().markdown;
+      expect(markdown).toBe("loosening the thread pool");
+      expect(markdown).not.toContain("rm -rf");
+      expect(markdown).not.toContain("/etc/passwd");
+      expect(markdown).not.toContain("hunter2");
+      expect(markdown).not.toContain("OMOS");
+    }
+  });
+
   it("collapses failures into one line in steps mode", () => {
-    const renderer = new ProgressRenderer({ mode: "steps", t: getTranslator("en-US") });
+    const renderer = new ProgressRenderer({
+      mode: "steps",
+      t: getTranslator("en-US"),
+      random: () => 0,
+    });
     renderer.takeProgressEvent({
       type: "assistant.tool.error",
       clientSessionId: "s1",
@@ -299,38 +337,55 @@ describe("ProgressRenderer", () => {
       text: "exit 1",
     });
     const progress = renderer.getCurrentProgress();
-    expect(progress.markdown).toBe("The previous step failed, continuing.");
+    expect(progress.markdown).toBe("That step misfired, continuing.");
     expect(progress.status).toBe("error");
   });
 
-  it("maps unknown tools and tool-name prefixes onto step families", () => {
-    const renderer = new ProgressRenderer({ mode: "steps", t: getTranslator("en-US") });
-    renderer.takeProgressEvent({
-      type: "assistant.tool.running",
-      clientSessionId: "s1",
-      toolName: "lsp_hover",
+  it("renders step lines in Chinese", () => {
+    const renderer = new ProgressRenderer({
+      mode: "steps",
+      t: getTranslator("zh-CN"),
+      random: () => 0,
     });
-    expect(renderer.getCurrentProgress().markdown).toBe("Reading files");
-
-    renderer.takeProgressEvent({
-      type: "assistant.tool.running",
-      clientSessionId: "s1",
-      toolName: "mcp__jenkins__trigger",
-    });
-    expect(renderer.getCurrentProgress().markdown).toBe("Working on it");
+    renderer.takeProgressEvent({ type: "session.compacting", clientSessionId: "s1" });
+    expect(renderer.getCurrentProgress().markdown).toBe("正在给线程池放风");
   });
 
-  it("renders step lines in Chinese", () => {
-    const renderer = new ProgressRenderer({ mode: "steps", t: getTranslator("zh-CN") });
+  it("draws differently across tool calls but keeps one line per call", () => {
+    let next = 0;
+    const renderer = new ProgressRenderer({
+      mode: "steps",
+      t: getTranslator("en-US"),
+      random: () => (next === 0 ? 0 : 0.99),
+    });
+
     renderer.takeProgressEvent({
       type: "assistant.tool.running",
       clientSessionId: "s1",
-      toolName: "web_search",
+      toolName: "bash",
+      toolCallId: "call-1",
     });
-    expect(renderer.getCurrentProgress().markdown).toBe("正在获取网页");
+    const first = renderer.getCurrentProgress().markdown;
+    expect(first).toBe("loosening the thread pool");
 
-    renderer.takeProgressEvent({ type: "session.compacting", clientSessionId: "s1" });
-    expect(renderer.getCurrentProgress().markdown).toBe("正在压缩上下文");
+    next = 1;
+    renderer.takeProgressEvent({
+      type: "assistant.tool.done",
+      clientSessionId: "s1",
+      toolName: "bash",
+      toolCallId: "call-1",
+    });
+    expect(renderer.getCurrentProgress().markdown).toBe(first);
+
+    renderer.takeProgressEvent({
+      type: "assistant.tool.running",
+      clientSessionId: "s1",
+      toolName: "bash",
+      toolCallId: "call-2",
+    });
+    expect(renderer.getCurrentProgress().markdown).toBe(
+      "finding a rhyme for the commit message",
+    );
   });
 
   it("keeps the per-tool log when mode is log", () => {
@@ -342,57 +397,5 @@ describe("ProgressRenderer", () => {
       toolLabel: "npm test",
     });
     expect(renderer.getCurrentProgress().markdown).toBe("- ⏳ bash: npm test");
-  });
-
-  it("classifies shell commands without showing the command itself", () => {
-    const renderer = new ProgressRenderer({ mode: "steps", t: getTranslator("en-US") });
-    const cases: Array<[command: string, expected: string]> = [
-      ["npm test -- --run", "Running tests"],
-      ["pytest -q tests/", "Running tests"],
-      ["npm run build", "Building"],
-      ["npm i -g @hopgoldy/agent-bridge", "Installing dependencies"],
-      ["git commit -m 'feat: x'", "Committing changes"],
-      ["git status", "Working with git"],
-      ["systemctl restart agent-bridge-wecom", "Operating a service"],
-      ["ssh root@10.111.185.122 uptime", "Connecting to a remote host"],
-      ["curl -s https://example.com", "Making a network request"],
-      ["tar -czf out.tgz dist", "Packing files"],
-      ["ls -la /usr/lib/node_modules", "Inspecting files"],
-      ["rm -rf /tmp/cache", "Manipulating files"],
-      ["chmod 755 deploy.sh", "Adjusting permissions"],
-      ["ps aux | grep node", "Checking processes"],
-      ["sed -i 's/a/b/' file.txt", "Processing text"],
-      ["node scripts/deploy.mjs", "Running a script"],
-      ["foobar --with-nothing", "Running a command"],
-    ];
-
-    for (const [command, expected] of cases) {
-      renderer.takeProgressEvent({
-        type: "assistant.tool.running",
-        clientSessionId: "s1",
-        toolName: "bash",
-        toolInput: { command },
-      });
-      expect(renderer.getCurrentProgress().markdown).toBe(expected);
-    }
-  });
-
-  it("classifies shell commands in Chinese too", () => {
-    const renderer = new ProgressRenderer({ mode: "steps", t: getTranslator("zh-CN") });
-    renderer.takeProgressEvent({
-      type: "assistant.tool.running",
-      clientSessionId: "s1",
-      toolName: "bash",
-      toolInput: { command: "npm test" },
-    });
-    expect(renderer.getCurrentProgress().markdown).toBe("正在运行测试");
-
-    renderer.takeProgressEvent({
-      type: "assistant.tool.running",
-      clientSessionId: "s1",
-      toolName: "bash",
-      toolInput: { command: "git push origin main" },
-    });
-    expect(renderer.getCurrentProgress().markdown).toBe("正在提交代码");
   });
 });
