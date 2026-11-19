@@ -49,7 +49,13 @@ const MAX_STREAM_BODY_BYTES = 16000;
  * flight. Without it the answer-only design would leave the bubble frozen from
  * the moment the last step started until the run settles.
  */
-const STEP_HEARTBEAT_INTERVAL_MS = 5000;
+/**
+ * How often a motionless bubble is refreshed while a long step is still in
+ * flight. Every stream frame rewrites the whole body and the client repaints on
+ * each one, so this stays deliberately slow: it only has to prove the run is
+ * alive, not to animate the bubble.
+ */
+const DEFAULT_STEP_HEARTBEAT_INTERVAL_MS = 15000;
 
 // Display-only twin of the marker pattern in `media-convention.ts`: the delta
 // stream may cut a `MEDIA:` marker in half, and files may not exist yet, so
@@ -288,9 +294,26 @@ export class WecomIMAdapter implements IMAdapter {
         return;
       }
 
-      this.#lastInboundMessageIdBySession.set(clientSessionId, messageId);
-      this.#resetProgressState(clientSessionId);
-      await this.#announceStart(chatId, messageId, clientSessionId);
+      // One run, one bubble. A second message while the agent is still working
+      // steers that run (`prompt(..., "steer")` in the pi adapter), so it must
+      // not open a new bubble: a fresh messageId allocates a new streamId and
+      // leaves the first bubble frozen mid-sentence. Only a settled run starts
+      // over with a new one.
+      const activeState = this.#progressStateBySession.get(clientSessionId);
+      const steeringActiveRun = activeState !== undefined && activeState.announced;
+      if (steeringActiveRun) {
+        this.#logger.info(
+          `steering the active run, keeping its bubble (session=${clientSessionId} messageId=${messageId})`,
+        );
+      } else {
+        this.#lastInboundMessageIdBySession.set(clientSessionId, messageId);
+        this.#resetProgressState(clientSessionId);
+      }
+      await this.#announceStart(
+        chatId,
+        this.#lastInboundMessageIdBySession.get(clientSessionId) ?? messageId,
+        clientSessionId,
+      );
 
       const parsedCommand = parseSlashCommand(normalizedText, clientSessionId);
       if (parsedCommand) {
@@ -511,8 +534,18 @@ export class WecomIMAdapter implements IMAdapter {
     // text already collected for the closing frame cannot be overwritten by a
     // late tool event.
     const body = this.#buildStreamBody(state);
-    state.lastBody = body;
     const replyToMessageId = this.#lastInboundMessageIdBySession.get(event.clientSessionId);
+    state.announced = true;
+    this.#startHeartbeat(state, chatId, replyToMessageId);
+
+    // An identical body is a pure repaint. Every tool call emits running,
+    // several updates and done, and in steps mode they all carry the same line,
+    // so sending them would rewrite the bubble over and over for no visible
+    // change. Skip those instead of flickering.
+    if (body === state.lastBody) {
+      return;
+    }
+    state.lastBody = body;
     await this.#client.sendStreamText(chatId, body, {
       replyToMessageId,
       finish: false,
@@ -520,8 +553,6 @@ export class WecomIMAdapter implements IMAdapter {
       // behind an unacked frame and letting the bubble lag seconds behind.
       nonBlocking: true,
     });
-    state.announced = true;
-    this.#startHeartbeat(state, chatId, replyToMessageId);
   }
 
   /**
@@ -658,10 +689,22 @@ export class WecomIMAdapter implements IMAdapter {
     if (state.heartbeat) {
       return;
     }
+    const intervalMs = this.#stepHeartbeatIntervalMs;
+    if (intervalMs <= 0) {
+      return;
+    }
     state.heartbeat = setInterval(() => {
       void this.#sendHeartbeat(state);
-    }, STEP_HEARTBEAT_INTERVAL_MS);
+    }, intervalMs);
     state.heartbeat.unref?.();
+  }
+
+  /** Configured heartbeat cadence; `0` or a negative value turns it off. */
+  get #stepHeartbeatIntervalMs(): number {
+    const configured = this.#config.stepHeartbeatMs;
+    return typeof configured === "number" && Number.isFinite(configured)
+      ? configured
+      : DEFAULT_STEP_HEARTBEAT_INTERVAL_MS;
   }
 
   #stopHeartbeat(state: ProgressState): void {

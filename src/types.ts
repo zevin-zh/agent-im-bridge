@@ -483,6 +483,13 @@ export interface WecomClientConfig {
    * answer replaces it in the closing frame.
    */
   streamAnswer?: boolean;
+  /**
+   * How often a motionless bubble is refreshed, in milliseconds. Every refresh
+   * rewrites the whole stream frame, which the client renders as a repaint, so
+   * this trades "looks alive" against "looks like it flickers". Defaults to
+   * 15000; `0` disables the heartbeat entirely.
+   */
+  stepHeartbeatMs?: number;
 }
 
 export interface WeixinClientConfig {

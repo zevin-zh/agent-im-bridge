@@ -688,29 +688,30 @@ describe("WecomIMAdapter", () => {
       text: undefined,
     });
 
-    await waitFor(() => fakeClientState.sendStreamText.mock.calls.length === 3);
+    await waitFor(() =>
+      fakeClientState.sendStreamText.mock.calls.some((call) =>
+        isStepOfPool("progress.steps.failed", call[1]),
+      ),
+    );
 
-    expect(isStepOfPool("progress.steps.pool", fakeClientState.sendStreamText.mock.calls[0]?.[1])).toBe(
-      true,
-    );
-    expect(isStepOfPool("progress.steps.pool", fakeClientState.sendStreamText.mock.calls[1]?.[1])).toBe(
-      true,
-    );
-    expect(isStepOfPool("progress.steps.failed", fakeClientState.sendStreamText.mock.calls[2]?.[1])).toBe(
-      true,
-    );
-    expect(fakeClientState.sendStreamText.mock.calls[2]?.[2]).toEqual({
+    // Every frame is a pool line; the last one reports the failure. Frames with
+    // an unchanged body are skipped, so the exact count is not fixed.
+    for (const call of fakeClientState.sendStreamText.mock.calls) {
+      expect(
+        isStepOfPool("progress.steps.pool", call[1]) ||
+          isStepOfPool("progress.steps.failed", call[1]),
+      ).toBe(true);
+      expect(call[1]).not.toContain("web_search");
+      expect(call[1]).not.toContain("bash");
+    }
+    expect(
+      isStepOfPool("progress.steps.failed", fakeClientState.sendStreamText.mock.calls.at(-1)?.[1]),
+    ).toBe(true);
+    expect(fakeClientState.sendStreamText.mock.calls.at(-1)?.[2]).toEqual({
       replyToMessageId: "msg-progress-1",
       finish: false,
       nonBlocking: true,
     });
-
-    // Tool names never reach the bubble: the user sees what is happening, not
-    // which tool the agent picked.
-    for (const call of fakeClientState.sendStreamText.mock.calls) {
-      expect(call[1]).not.toContain("web_search");
-      expect(call[1]).not.toContain("bash");
-    }
   });
 
   it("shows a collapsed-updates summary while refreshing the same progress stream", async () => {
@@ -779,6 +780,7 @@ describe("WecomIMAdapter", () => {
         botId: "bot-id",
         secret: "secret",
         requireMentionInGroup: true,
+        stepHeartbeatMs: 5000,
       },
       createLogger("test"),
     );
@@ -798,24 +800,22 @@ describe("WecomIMAdapter", () => {
       clientSessionId: "wecom:dm:user_1",
       agentSessionId: "agent-1",
       toolName: "bash",
-      text: undefined,
+      toolCallId: "call-1",
     });
-    await waitFor(() => fakeClientState.sendStreamText.mock.calls.length === 1);
-    const step = fakeClientState.sendStreamText.mock.calls[0]?.[1] as string;
-    expect(isStepOfPool("progress.steps.pool", step)).toBe(true);
+
+    const before = fakeClientState.sendStreamText.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(5000);
+    await waitFor(() => fakeClientState.sendStreamText.mock.calls.length > before);
+    const firstBeat = fakeClientState.sendStreamText.mock.calls.at(-1)?.[1] as string;
+    expect(firstBeat.endsWith(".")).toBe(true);
+    expect(firstBeat).not.toMatch(/\d/);
 
     await vi.advanceTimersByTimeAsync(5000);
-    await waitFor(() => fakeClientState.sendStreamText.mock.calls.length === 2);
-    expect(fakeClientState.sendStreamText.mock.calls[1]?.[1]).toBe(`${step}.`);
-
-    await vi.advanceTimersByTimeAsync(5000);
-    await waitFor(() => fakeClientState.sendStreamText.mock.calls.length === 3);
-    expect(fakeClientState.sendStreamText.mock.calls[2]?.[1]).toBe(`${step}..`);
-
-    // Nothing on screen reports a duration.
-    for (const call of fakeClientState.sendStreamText.mock.calls) {
-      expect(call[1]).not.toMatch(/\d/);
-    }
+    await waitFor(() => fakeClientState.sendStreamText.mock.calls.length > before + 1);
+    const secondBeat = fakeClientState.sendStreamText.mock.calls.at(-1)?.[1] as string;
+    // Same step line, one more dot: the bubble proves it is alive without a clock.
+    expect(secondBeat).toBe(`${firstBeat}.`);
+    expect(secondBeat).not.toMatch(/\d/);
   });
 
   it("sends attachments after the text reply", async () => {
@@ -1504,5 +1504,125 @@ describe("WecomIMAdapter", () => {
 
     const finished = fakeClientState.sendStreamText.mock.calls.find((call) => call[2]?.finish === true);
     expect(finished?.[1]).toBe("All done.");
+  });
+
+  it("does not resend a frame whose body has not changed", async () => {
+    const adapter = new WecomIMAdapter(
+      {
+        botId: "bot-id",
+        secret: "secret",
+        requireMentionInGroup: true,
+      },
+      createLogger("test"),
+    );
+
+    await adapter.start(async () => {});
+    await fakeClientState.onMessage?.({
+      chatId: "user_1",
+      chatType: "dm",
+      messageId: "msg-same-body",
+      text: "hello",
+      mentionedBot: false,
+    });
+    fakeClientState.sendStreamText.mockClear();
+
+    await adapter.input({
+      type: "assistant.tool.running",
+      clientSessionId: "wecom:dm:user_1",
+      agentSessionId: "agent-1",
+      toolName: "bash",
+      toolCallId: "call-1",
+    });
+    await adapter.input({
+      type: "assistant.tool.update",
+      clientSessionId: "wecom:dm:user_1",
+      agentSessionId: "agent-1",
+      toolName: "bash",
+      toolCallId: "call-1",
+    });
+    await adapter.input({
+      type: "assistant.tool.done",
+      clientSessionId: "wecom:dm:user_1",
+      agentSessionId: "agent-1",
+      toolName: "bash",
+      toolCallId: "call-1",
+    });
+
+    // Running/update/done all carry the same line for one call, so only the
+    // first frame goes out. Everything else would be a repaint of the same text.
+    expect(fakeClientState.sendStreamText).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps one bubble when a second message steers the active run", async () => {
+    const adapter = new WecomIMAdapter(
+      {
+        botId: "bot-id",
+        secret: "secret",
+        requireMentionInGroup: true,
+      },
+      createLogger("test"),
+    );
+    const onOutput = vi.fn(async (_event: ClientOutputEvent) => {});
+
+    await adapter.start(onOutput);
+    await fakeClientState.onMessage?.({
+      chatId: "user_1",
+      chatType: "dm",
+      messageId: "msg-first",
+      text: "hello",
+      mentionedBot: false,
+    });
+    await fakeClientState.onMessage?.({
+      chatId: "user_1",
+      chatType: "dm",
+      messageId: "msg-second",
+      text: "and also this",
+      mentionedBot: false,
+    });
+
+    // Both messages reach the agent, but only one bubble exists: a second
+    // messageId would allocate a second streamId and strand the first bubble.
+    expect(onOutput).toHaveBeenCalledTimes(2);
+    expect(fakeClientState.sendStreamText).toHaveBeenCalledTimes(1);
+    const replyIds = new Set(
+      fakeClientState.sendStreamText.mock.calls.map((call) => call[2]?.replyToMessageId),
+    );
+    expect(replyIds).toEqual(new Set(["msg-first"]));
+  });
+
+  it("stops refreshing the bubble when the heartbeat is disabled", async () => {
+    vi.useFakeTimers();
+
+    const adapter = new WecomIMAdapter(
+      {
+        botId: "bot-id",
+        secret: "secret",
+        requireMentionInGroup: true,
+        stepHeartbeatMs: 0,
+      },
+      createLogger("test"),
+    );
+
+    await adapter.start(async () => {});
+    await fakeClientState.onMessage?.({
+      chatId: "user_1",
+      chatType: "dm",
+      messageId: "msg-no-heartbeat",
+      text: "hello",
+      mentionedBot: false,
+    });
+    fakeClientState.sendStreamText.mockClear();
+
+    await adapter.input({
+      type: "assistant.tool.running",
+      clientSessionId: "wecom:dm:user_1",
+      agentSessionId: "agent-1",
+      toolName: "bash",
+      toolCallId: "call-1",
+    });
+    await waitFor(() => fakeClientState.sendStreamText.mock.calls.length === 1);
+
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(fakeClientState.sendStreamText).toHaveBeenCalledTimes(1);
   });
 });
