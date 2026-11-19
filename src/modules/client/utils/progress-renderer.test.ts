@@ -383,9 +383,9 @@ describe("ProgressRenderer", () => {
       toolName: "bash",
       toolCallId: "call-2",
     });
-    expect(renderer.getCurrentProgress().markdown).toBe(
-      "finding a rhyme for the commit message",
-    );
+    // 0.99 lands on the last variant, whatever the pool currently holds.
+    const pool = getTranslator("en-US")("progress.steps.pool").split("|");
+    expect(renderer.getCurrentProgress().markdown).toBe(pool[pool.length - 1]);
   });
 
   it("keeps the per-tool log when mode is log", () => {
