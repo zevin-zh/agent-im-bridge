@@ -1625,4 +1625,137 @@ describe("WecomIMAdapter", () => {
     await vi.advanceTimersByTimeAsync(60000);
     expect(fakeClientState.sendStreamText).toHaveBeenCalledTimes(1);
   });
+
+  it("shows a completed step's result under the line and drops it on the next step", async () => {
+    const adapter = new WecomIMAdapter(
+      {
+        botId: "bot-id",
+        secret: "secret",
+        requireMentionInGroup: true,
+      },
+      createLogger("test"),
+    );
+
+    await adapter.start(async () => {});
+    await fakeClientState.onMessage?.({
+      chatId: "user_1",
+      chatType: "dm",
+      messageId: "msg-step-result",
+      text: "hello",
+      mentionedBot: false,
+    });
+    fakeClientState.sendStreamText.mockClear();
+
+    await adapter.input({
+      type: "assistant.tool.running",
+      clientSessionId: "wecom:dm:user_1",
+      agentSessionId: "agent-1",
+      toolName: "bash",
+      toolCallId: "call-1",
+    });
+    const runningCount = fakeClientState.sendStreamText.mock.calls.length;
+
+    await adapter.input({
+      type: "assistant.tool.done",
+      clientSessionId: "wecom:dm:user_1",
+      agentSessionId: "agent-1",
+      toolName: "bash",
+      toolCallId: "call-1",
+      result: "build ok\noutput 448 KB",
+    });
+
+    await waitFor(() => fakeClientState.sendStreamText.mock.calls.length > runningCount);
+    const doneBody = fakeClientState.sendStreamText.mock.calls.at(-1)?.[1] as string;
+    expect(doneBody).toContain("Result: build ok");
+    expect(doneBody).toContain("output 448 KB");
+
+    const doneCount = fakeClientState.sendStreamText.mock.calls.length;
+    await adapter.input({
+      type: "assistant.tool.running",
+      clientSessionId: "wecom:dm:user_1",
+      agentSessionId: "agent-1",
+      toolName: "read",
+      toolCallId: "call-2",
+    });
+
+    await waitFor(() => fakeClientState.sendStreamText.mock.calls.length > doneCount);
+    const nextBody = fakeClientState.sendStreamText.mock.calls.at(-1)?.[1] as string;
+    // The next step starts from a clean line: the previous outcome is gone.
+    expect(nextBody).not.toContain("build ok");
+    expect(nextBody).not.toContain("Result:");
+  });
+
+  it("clamps a long step result to three lines", async () => {
+    const adapter = new WecomIMAdapter(
+      {
+        botId: "bot-id",
+        secret: "secret",
+        requireMentionInGroup: true,
+      },
+      createLogger("test"),
+    );
+
+    await adapter.start(async () => {});
+    await fakeClientState.onMessage?.({
+      chatId: "user_1",
+      chatType: "dm",
+      messageId: "msg-step-result-long",
+      text: "hello",
+      mentionedBot: false,
+    });
+    fakeClientState.sendStreamText.mockClear();
+
+    const result = Array.from({ length: 40 }, (_, index) => `line ${index}`).join("\n");
+    await adapter.input({
+      type: "assistant.tool.done",
+      clientSessionId: "wecom:dm:user_1",
+      agentSessionId: "agent-1",
+      toolName: "bash",
+      toolCallId: "call-1",
+      result,
+    });
+
+    await waitFor(() => fakeClientState.sendStreamText.mock.calls.length === 1);
+    const body = fakeClientState.sendStreamText.mock.calls[0]?.[1] as string;
+    expect(body).toContain("line 0");
+    expect(body).toContain("line 2");
+    expect(body).not.toContain("line 3");
+    expect(body).toContain("…");
+  });
+
+  it("keeps the result out of the bubble when showStepResult is false", async () => {
+    const adapter = new WecomIMAdapter(
+      {
+        botId: "bot-id",
+        secret: "secret",
+        requireMentionInGroup: true,
+        showStepResult: false,
+      },
+      createLogger("test"),
+    );
+
+    await adapter.start(async () => {});
+    await fakeClientState.onMessage?.({
+      chatId: "user_1",
+      chatType: "dm",
+      messageId: "msg-step-result-off",
+      text: "hello",
+      mentionedBot: false,
+    });
+    fakeClientState.sendStreamText.mockClear();
+
+    await adapter.input({
+      type: "assistant.tool.done",
+      clientSessionId: "wecom:dm:user_1",
+      agentSessionId: "agent-1",
+      toolName: "bash",
+      toolCallId: "call-1",
+      result: "build ok",
+    });
+
+    await waitFor(() => fakeClientState.sendStreamText.mock.calls.length === 1);
+    const body = fakeClientState.sendStreamText.mock.calls[0]?.[1] as string;
+    expect(body).not.toContain("Result:");
+    expect(body).not.toContain("build ok");
+  });
 });

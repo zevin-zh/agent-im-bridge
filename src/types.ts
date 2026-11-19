@@ -490,6 +490,12 @@ export interface WecomClientConfig {
    * 15000; `0` disables the heartbeat entirely.
    */
   stepHeartbeatMs?: number;
+  /**
+   * Show a short summary of a completed step's result under its line, until the
+   * next step starts. Defaults to `true`. Turn it off to keep the bubble to the
+   * step line only.
+   */
+  showStepResult?: boolean;
 }
 
 export interface WeixinClientConfig {

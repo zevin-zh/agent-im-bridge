@@ -44,6 +44,10 @@ const MAX_TEXT_CHUNK = 4000;
  * character costs three of them.
  */
 const MAX_STREAM_BODY_BYTES = 16000;
+/** Lines kept from a completed step's result before the tail is replaced by an ellipsis. */
+const MAX_STEP_RESULT_LINES = 3;
+/** Characters kept from those lines, so a single huge line cannot fill the bubble. */
+const MAX_STEP_RESULT_CHARS = 240;
 /**
  * How often a motionless bubble is refreshed while a long step is still in
  * flight. Without it the answer-only design would leave the bubble frozen from
@@ -89,6 +93,11 @@ type ProgressState = {
   lastBody?: string;
   /** The opening line picked for this run; the heartbeat keeps it stable. */
   announceText?: string;
+  /**
+   * Summary of the step that just finished, shown under the step line until the
+   * next step starts. Cleared when a new tool call begins.
+   */
+  stepResult?: string;
 };
 
 /** Strips `MEDIA:` directives (including a half-received trailing one) for display. */
@@ -164,6 +173,56 @@ function splitFinalBody(body: string): { head: string; rest: string } {
   }
 
   return { head, rest: body.slice(head.length).replace(/^\n+/, "") };
+}
+
+/**
+ * Turns a tool result into the few lines worth showing under the step line.
+ *
+ * Tool results can be megabytes of stdout or deeply nested objects, so this
+ * keeps the head, drops the tail and never throws: anything it cannot read
+ * simply yields nothing to display.
+ */
+function summarizeToolResult(result: unknown): string | undefined {
+  const text = readResultText(result, 0);
+  if (!text) {
+    return undefined;
+  }
+  const lines = stripStreamMediaMarkers(text)
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter((line) => line.trim().length > 0);
+  if (lines.length === 0) {
+    return undefined;
+  }
+  const head = lines.slice(0, MAX_STEP_RESULT_LINES).join("\n");
+  const clamped =
+    head.length > MAX_STEP_RESULT_CHARS ? `${head.slice(0, MAX_STEP_RESULT_CHARS)}…` : head;
+  return lines.length > MAX_STEP_RESULT_LINES ? `${clamped}\n…` : clamped;
+}
+
+function readResultText(value: unknown, depth: number): string | undefined {
+  if (depth > 4) {
+    return undefined;
+  }
+  if (typeof value === "string") {
+    return value.trim().length > 0 ? value : undefined;
+  }
+  if (Array.isArray(value)) {
+    const parts = value
+      .map((entry) => readResultText(entry, depth + 1))
+      .filter((entry): entry is string => entry !== undefined);
+    return parts.length > 0 ? parts.join("\n") : undefined;
+  }
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    for (const key of ["content", "text", "output", "stdout", "result", "message"]) {
+      const nested = readResultText(record[key], depth + 1);
+      if (nested) {
+        return nested;
+      }
+    }
+  }
+  return undefined;
 }
 
 function chunkText(text: string, maxLen: number): string[] {
@@ -528,6 +587,7 @@ export class WecomIMAdapter implements IMAdapter {
       return;
     }
     state.renderer.takeProgressEvent(event);
+    this.#applyStepResult(state, event);
 
     // Refresh the same stream message in place, like the feishu adapter
     // updates its progress card. Go through #buildStreamBody so that answer
@@ -613,6 +673,25 @@ export class WecomIMAdapter implements IMAdapter {
   }
 
   /**
+   * Mirrors the latest completed step's result into the bubble until the next
+   * step starts, so a finished step shows its outcome before the next line takes
+   * over. Running events clear it; update events leave it alone.
+   */
+  #applyStepResult(
+    state: ProgressState,
+    event: Exclude<ClientInputEvent, { type: "assistant.message" }>,
+  ): void {
+    if (event.type === "assistant.tool.running") {
+      state.stepResult = undefined;
+      return;
+    }
+    if (event.type !== "assistant.tool.done" && event.type !== "assistant.tool.error") {
+      return;
+    }
+    state.stepResult = this.#showStepResult ? summarizeToolResult(event.result) : undefined;
+  }
+
+  /**
    * Renders the in-progress bubble body.
    *
    * The default `steps` mode keeps it to a single status line describing what
@@ -628,6 +707,9 @@ export class WecomIMAdapter implements IMAdapter {
     const sections: string[] = [];
     if (!progress.isEmpty && (answer.length === 0 || !this.#streamAnswer)) {
       sections.push(progress.markdown);
+    }
+    if (!this.#streamAnswer && state.stepResult) {
+      sections.push(`${this.#t("progress.steps.resultPrefix")}${state.stepResult}`);
     }
     if (this.#streamAnswer && answer.length > 0) {
       sections.push(answer);
@@ -683,6 +765,11 @@ export class WecomIMAdapter implements IMAdapter {
     return this.#config.streamAnswer === true;
   }
 
+  /** Whether a completed step's result is shown under its line. */
+  get #showStepResult(): boolean {
+    return this.#config.showStepResult !== false;
+  }
+
   #startHeartbeat(state: ProgressState, chatId: string, replyToMessageId?: string): void {
     state.chatId = chatId;
     state.replyToMessageId = replyToMessageId;
@@ -731,9 +818,12 @@ export class WecomIMAdapter implements IMAdapter {
     const subject = progress.isEmpty
       ? (state.announceText ?? pickStepVariant(this.#t("progress.steps.pool")))
       : progress.markdown;
+    const base = state.stepResult
+      ? `${subject}\n\n${this.#t("progress.steps.resultPrefix")}${state.stepResult}`
+      : subject;
     const dots = (state.heartbeatTick % 3) + 1;
     state.heartbeatTick += 1;
-    const body = `${subject}${".".repeat(dots)}`;
+    const body = clampStreamBody(`${base}${".".repeat(dots)}`);
     if (body === state.lastBody) {
       return;
     }
