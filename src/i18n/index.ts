@@ -25,7 +25,6 @@ const resources = {
           generic: "Working on it",
           done: "Done.",
           failed: "The previous step failed, continuing.",
-          elapsed: "{{subject}} · {{seconds}}s elapsed",
         },
       },
       client: {
@@ -186,7 +185,6 @@ const resources = {
           generic: "正在处理",
           done: "已完成。",
           failed: "上一步执行失败，继续处理。",
-          elapsed: "{{subject}} · 已用 {{seconds}} 秒",
         },
       },
       client: {

@@ -726,6 +726,52 @@ describe("WecomIMAdapter", () => {
     });
   });
 
+  it("keeps a long step alive with a rotating dot and no elapsed time", async () => {
+    vi.useFakeTimers();
+
+    const adapter = new WecomIMAdapter(
+      {
+        botId: "bot-id",
+        secret: "secret",
+        requireMentionInGroup: true,
+      },
+      createLogger("test"),
+    );
+
+    await adapter.start(async () => {});
+    await fakeClientState.onMessage?.({
+      chatId: "user_1",
+      chatType: "dm",
+      messageId: "msg-heartbeat",
+      text: "hello",
+      mentionedBot: false,
+    });
+    fakeClientState.sendStreamText.mockClear();
+
+    await adapter.input({
+      type: "assistant.tool.running",
+      clientSessionId: "wecom:dm:user_1",
+      agentSessionId: "agent-1",
+      toolName: "bash",
+      text: undefined,
+    });
+    await waitFor(() => fakeClientState.sendStreamText.mock.calls.length === 1);
+    expect(fakeClientState.sendStreamText.mock.calls[0]?.[1]).toBe("Running a command");
+
+    await vi.advanceTimersByTimeAsync(5000);
+    await waitFor(() => fakeClientState.sendStreamText.mock.calls.length === 2);
+    expect(fakeClientState.sendStreamText.mock.calls[1]?.[1]).toBe("Running a command.");
+
+    await vi.advanceTimersByTimeAsync(5000);
+    await waitFor(() => fakeClientState.sendStreamText.mock.calls.length === 3);
+    expect(fakeClientState.sendStreamText.mock.calls[2]?.[1]).toBe("Running a command..");
+
+    // Nothing on screen reports a duration.
+    for (const call of fakeClientState.sendStreamText.mock.calls) {
+      expect(call[1]).not.toMatch(/\d/);
+    }
+  });
+
   it("sends attachments after the text reply", async () => {
     const adapter = new WecomIMAdapter(
       {

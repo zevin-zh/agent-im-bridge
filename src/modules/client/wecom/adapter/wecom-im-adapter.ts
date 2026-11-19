@@ -76,8 +76,9 @@ type ProgressState = {
   /** Chat the bubble belongs to; the heartbeat needs it. */
   chatId?: string;
   replyToMessageId?: string;
-  startedAt: number;
   heartbeat?: ReturnType<typeof setInterval>;
+  /** Rotates the trailing dots so consecutive heartbeat frames differ. */
+  heartbeatTick: number;
   /** Suppresses a heartbeat frame that would repeat the body already sent. */
   lastBody?: string;
 };
@@ -632,7 +633,7 @@ export class WecomIMAdapter implements IMAdapter {
       streaming: false,
       answerText: "",
       lastMessageText: "",
-      startedAt: Date.now(),
+      heartbeatTick: 0,
     };
   }
 
@@ -666,9 +667,9 @@ export class WecomIMAdapter implements IMAdapter {
   }
 
   /**
-   * Keeps a motionless bubble alive during a long step. The body carries the
-   * elapsed time so consecutive frames differ; identical frames are skipped to
-   * avoid pointless traffic.
+   * Keeps a motionless bubble alive during a long step. A rotating dot is the
+   * only thing that changes when nothing else does: the bubble stays visibly
+   * alive without putting a clock on screen.
    */
   async #sendHeartbeat(state: ProgressState): Promise<void> {
     if (!this.#client || !state.announced || !state.chatId) {
@@ -680,8 +681,9 @@ export class WecomIMAdapter implements IMAdapter {
 
     const progress = state.renderer.getCurrentProgress();
     const subject = progress.isEmpty ? this.#t("client.processing") : progress.markdown;
-    const seconds = Math.max(1, Math.round((Date.now() - state.startedAt) / 1000));
-    const body = this.#t("progress.steps.elapsed", { subject, seconds });
+    const dots = (state.heartbeatTick % 3) + 1;
+    state.heartbeatTick += 1;
+    const body = `${subject}${".".repeat(dots)}`;
     if (body === state.lastBody) {
       return;
     }
