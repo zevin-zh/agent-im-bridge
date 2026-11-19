@@ -343,4 +343,56 @@ describe("ProgressRenderer", () => {
     });
     expect(renderer.getCurrentProgress().markdown).toBe("- ⏳ bash: npm test");
   });
+
+  it("classifies shell commands without showing the command itself", () => {
+    const renderer = new ProgressRenderer({ mode: "steps", t: getTranslator("en-US") });
+    const cases: Array<[command: string, expected: string]> = [
+      ["npm test -- --run", "Running tests"],
+      ["pytest -q tests/", "Running tests"],
+      ["npm run build", "Building"],
+      ["npm i -g @hopgoldy/agent-bridge", "Installing dependencies"],
+      ["git commit -m 'feat: x'", "Committing changes"],
+      ["git status", "Working with git"],
+      ["systemctl restart agent-bridge-wecom", "Operating a service"],
+      ["ssh root@10.111.185.122 uptime", "Connecting to a remote host"],
+      ["curl -s https://example.com", "Making a network request"],
+      ["tar -czf out.tgz dist", "Packing files"],
+      ["ls -la /usr/lib/node_modules", "Inspecting files"],
+      ["rm -rf /tmp/cache", "Manipulating files"],
+      ["chmod 755 deploy.sh", "Adjusting permissions"],
+      ["ps aux | grep node", "Checking processes"],
+      ["sed -i 's/a/b/' file.txt", "Processing text"],
+      ["node scripts/deploy.mjs", "Running a script"],
+      ["foobar --with-nothing", "Running a command"],
+    ];
+
+    for (const [command, expected] of cases) {
+      renderer.takeProgressEvent({
+        type: "assistant.tool.running",
+        clientSessionId: "s1",
+        toolName: "bash",
+        toolInput: { command },
+      });
+      expect(renderer.getCurrentProgress().markdown).toBe(expected);
+    }
+  });
+
+  it("classifies shell commands in Chinese too", () => {
+    const renderer = new ProgressRenderer({ mode: "steps", t: getTranslator("zh-CN") });
+    renderer.takeProgressEvent({
+      type: "assistant.tool.running",
+      clientSessionId: "s1",
+      toolName: "bash",
+      toolInput: { command: "npm test" },
+    });
+    expect(renderer.getCurrentProgress().markdown).toBe("正在运行测试");
+
+    renderer.takeProgressEvent({
+      type: "assistant.tool.running",
+      clientSessionId: "s1",
+      toolName: "bash",
+      toolInput: { command: "git push origin main" },
+    });
+    expect(renderer.getCurrentProgress().markdown).toBe("正在提交代码");
+  });
 });

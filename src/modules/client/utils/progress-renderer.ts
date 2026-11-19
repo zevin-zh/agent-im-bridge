@@ -88,6 +88,72 @@ const STEP_KEY_BY_TOOL_PREFIX: Array<[prefix: string, key: string]> = [
   ["exec_", "progress.steps.command"],
 ];
 
+/** Tools whose input carries a shell command worth classifying. */
+const SHELL_TOOL_NAME_PATTERN =
+  /^(?:bash|shell|exec|execute|terminal|command|run_command|run_shell|local_shell)$/;
+
+/**
+ * Shell commands are classified by what they do rather than shown verbatim:
+ * "running tests" tells the user more than "running a command" without turning
+ * the bubble into a terminal. Order matters — the first match wins.
+ */
+const COMMAND_STEP_RULES: Array<[pattern: RegExp, key: string]> = [
+  [
+    /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test\b|\b(?:pytest|vitest|jest|mocha|phpunit)\b|\b(?:go|cargo|make)\s+test\b/,
+    "progress.steps.tests",
+  ],
+  [
+    /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?build\b|\b(?:tsup|tsc|webpack|rollup|vite\s+build|make|cargo\s+build|mvn|gradle)\b/,
+    "progress.steps.build",
+  ],
+  [
+    /\b(?:npm|pnpm|yarn|bun)\s+(?:install|add|i)\b|\bpip3?\s+install\b|\bapt(?:-get)?\s+install\b|\bcargo\s+add\b|\bgo\s+get\b/,
+    "progress.steps.install",
+  ],
+  [/\bgit\s+(?:commit|push|tag|merge|rebase|cherry-pick|am)\b/, "progress.steps.commit"],
+  [/\bgit\b/, "progress.steps.git"],
+  [
+    /\b(?:systemctl|journalctl|service|docker|docker-compose|kubectl|pm2|supervisorctl)\b/,
+    "progress.steps.service",
+  ],
+  [/\b(?:ssh|scp|sftp|rsync)\b/, "progress.steps.remote"],
+  [/\b(?:curl|wget|ping|nc|telnet)\b/, "progress.steps.network"],
+  [/\b(?:tar|zip|unzip|gzip|gunzip|7z)\b/, "progress.steps.archive"],
+  [/\b(?:ls|cat|head|tail|less|more|find|stat|wc|tree|du|df)\b/, "progress.steps.inspect"],
+  [/\b(?:rm|cp|mv|mkdir|rmdir|touch|ln)\b/, "progress.steps.files"],
+  [/\b(?:chmod|chown|chgrp)\b/, "progress.steps.permission"],
+  [/\b(?:ps|top|htop|kill|pkill|killall|free|uptime)\b/, "progress.steps.process"],
+  [/\b(?:sed|awk|sort|uniq|cut|tr|xargs|jq)\b/, "progress.steps.text"],
+  [/\b(?:python3?|node|deno|bun|bash|sh|zsh|ruby|perl)\b/, "progress.steps.script"],
+];
+
+function commandTextOf(toolName: string, toolInput: unknown): string | undefined {
+  if (!SHELL_TOOL_NAME_PATTERN.test(toolName.trim().toLowerCase())) {
+    return undefined;
+  }
+  if (!toolInput || typeof toolInput !== "object" || Array.isArray(toolInput)) {
+    return undefined;
+  }
+  const input = toolInput as Record<string, unknown>;
+  for (const key of ["command", "cmd", "script"]) {
+    const value = input[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return undefined;
+}
+
+function stepKeyForCommand(command: string): string | undefined {
+  const normalized = command.toLowerCase();
+  for (const [pattern, key] of COMMAND_STEP_RULES) {
+    if (pattern.test(normalized)) {
+      return key;
+    }
+  }
+  return undefined;
+}
+
 function stepKeyForToolName(toolName: string): string {
   const normalized = toolName.trim().toLowerCase();
   const exact = STEP_KEY_BY_TOOL_NAME[normalized];
@@ -229,6 +295,13 @@ export class ProgressRenderer {
   #stepSubjectFor(event: ProgressEvent): string {
     if (event.type === "session.compacting") {
       return this.#t("progress.steps.compact");
+    }
+    const command = commandTextOf(event.toolName, event.toolInput);
+    if (command) {
+      const commandKey = stepKeyForCommand(command);
+      if (commandKey) {
+        return this.#t(commandKey);
+      }
     }
     return this.#t(stepKeyForToolName(event.toolName));
   }
