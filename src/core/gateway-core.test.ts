@@ -2761,7 +2761,8 @@ describe("GatewayCore", () => {
   it("forwards non-message agent events to the client adapter without aggregating them", async () => {
     const imAdapter = new FakeIMAdapter();
     const createdAdapters: FakeAgentAdapter[] = [];
-    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.stubEnv("LOG_LEVEL", "debug");
+    const logSpy = vi.spyOn(console, "debug").mockImplementation(() => {});
 
     try {
       const agentModule = makeFakeModule({ createdAdapters });
@@ -2820,6 +2821,7 @@ describe("GatewayCore", () => {
       );
     } finally {
       logSpy.mockRestore();
+      vi.unstubAllEnvs();
     }
   });
 

@@ -1082,7 +1082,7 @@ export class GatewayCore {
     }
 
     if (this.#isToolRelatedEvent(event)) {
-      this.#logger.info("forwarding tool event from agent", {
+      this.#logger.debug("forwarding tool event from agent", {
         type: event.type,
         agentSessionId,
         clientSessionId,

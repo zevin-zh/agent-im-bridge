@@ -21,6 +21,7 @@ const resources = {
           failed: "That step misfired, continuing.|The spell fizzled, again.|A minion disobeyed, continuing.|Interrupted, picking it back up.",
           resultPrefix: "Result: ",
           stepDone: "That step is done.|Clean finish, next move.|Handled, moving on.|That one held.|Neat, on to the next.",
+          steered: "Noted, continuing this hand.|Got it, folding that in.|Added to the current move.|Heard you, keeping going.",
         },
       },
       client: {
@@ -177,6 +178,7 @@ const resources = {
           failed: "这一手出了岔子，继续。|咒语哑火了，再来。|有个随从不听指挥，继续。|被打断了一下，接着来。",
           resultPrefix: "结果：",
           stepDone: "这一步过了。|顺利收工，下一手。|搞定，继续。|这步走得很稳。|干净利落，下一手。",
+          steered: "收到补充，继续这一手。|记下了，接着来。|好，并进这一手。|补充收到，不停手。",
         },
       },
       client: {

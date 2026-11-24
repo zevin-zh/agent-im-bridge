@@ -180,6 +180,12 @@ WeCom sends an `enter_chat` event every time someone opens the bot conversation,
 
 Editing the pool means editing that array and rebuilding — there is no config key. Keep the lines short: WeCom renders this as a plain text reply in the chat window.
 
+## Logs and rotation
+
+The process logs at `info` by default. Per-event chatter — every SDK frame, every inbound message, every tool event the core forwards — is logged at `debug` instead, so a busy channel does not write megabytes of noise. Set `LOG_LEVEL=debug` in the service environment when that trace is actually needed.
+
+On the deployed host, `/etc/logrotate.d/agent-bridge` rotates `/root/.config/agent-bridge/*.log` weekly or once a file passes 20 MB, keeping four compressed rotations. `copytruncate` is required because systemd holds the log open in append mode and cannot be told to reopen it.
+
 ## Development
 
 ```bash

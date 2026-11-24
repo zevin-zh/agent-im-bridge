@@ -15,6 +15,23 @@ const IMAGE_SIGNATURE_JPG = Buffer.from("ffd8ff", "hex");
 // Keep a bounded LRU of recently processed ids so redelivered callbacks
 // (e.g. after a reconnect) are not handled twice.
 const PROCESSED_MESSAGE_ID_LIMIT = 500;
+/**
+ * Reply/stream contexts are keyed by inbound message id, so they grow with the
+ * conversation. Keeping a bounded window is enough: contexts older than this are
+ * only needed by a retry that will never come.
+ */
+const MESSAGE_CONTEXT_LIMIT = 500;
+
+function setBounded<K, V>(map: Map<K, V>, key: K, value: V, limit: number): void {
+  map.set(key, value);
+  while (map.size > limit) {
+    const oldest = map.keys().next().value;
+    if (oldest === undefined) {
+      return;
+    }
+    map.delete(oldest);
+  }
+}
 const KICKED_ERROR_MESSAGE =
   "WeCom connection was closed by the server because a newer connection was established for the same bot; this instance will not reconnect";
 // WeCom fires enter_chat every time a user opens the bot conversation, so a
@@ -325,6 +342,19 @@ export class WecomClient {
     return this.#replyContextByMessageId.get(messageId);
   }
 
+  /**
+   * Forgets the stream bound to a message so the next frame opens a fresh bubble.
+   * Used when the server already closed the stream (the 10 minute cap), where a
+   * closing frame would otherwise be rejected and the user would be left looking
+   * at a frozen status line.
+   */
+  resetStreamContext(chatId: string, messageId?: string): void {
+    if (messageId) {
+      this.#streamContextByMessageId.delete(messageId);
+    }
+    this.#lastStreamContextByChatId.delete(chatId);
+  }
+
   #streamContextFor(chatId: string, messageId?: string): StreamContext {
     if (messageId) {
       const existing = this.#streamContextByMessageId.get(messageId);
@@ -349,12 +379,12 @@ export class WecomClient {
 
   #registerInboundHandlers(client: SdkClientLike): void {
     client.on("event", (payload) => {
-      this.#logger.info(
+      this.#logger.debug(
         `received SDK event event (reqId=${String(payload?.headers?.req_id ?? "") || "n/a"} eventType=${String(payload?.body?.event?.eventtype ?? "") || "n/a"})`,
       );
     });
     client.on("event.enter_chat", (payload) => {
-      this.#logger.info(
+      this.#logger.debug(
         `received enter_chat event (reqId=${String(payload?.headers?.req_id ?? "") || "n/a"} userId=${String(payload?.body?.from?.userid ?? "") || "n/a"})`,
       );
       void this.#handleEnterChat(payload as Record<string, any>);
@@ -379,7 +409,7 @@ export class WecomClient {
       if (specificMsgTypes.has(msgtype)) {
         return;
       }
-      this.#logger.info(
+      this.#logger.debug(
         `received SDK event message (reqId=${String(payload?.headers?.req_id ?? "") || "n/a"} msgtype=${msgtype || "n/a"})`,
       );
       void this.#handleInboundCallback(
@@ -397,7 +427,7 @@ export class WecomClient {
       "message.mixed",
     ]) {
       client.on(eventName, (payload) => {
-        this.#logger.info(
+        this.#logger.debug(
           `received SDK event ${eventName} (reqId=${String(payload?.headers?.req_id ?? "") || "n/a"} msgtype=${String(payload?.body?.msgtype ?? "") || "n/a"})`,
         );
         void this.#handleInboundCallback(
@@ -438,7 +468,7 @@ export class WecomClient {
 
     const messageId = String(body.msgid ?? reqId ?? randomUUID()).trim();
     if (!this.#markMessageProcessed(messageId)) {
-      this.#logger.info(
+      this.#logger.debug(
         `dropping duplicate inbound callback (messageId=${messageId} reqId=${reqId || "n/a"})`,
       );
       return;
@@ -447,10 +477,10 @@ export class WecomClient {
     this.#replyReqIdByMessageId.set(messageId, reqId);
     this.#lastChatReqId.set(chatId, reqId);
     const replyContext = { reqId, frame: { headers: { req_id: reqId } } };
-    this.#replyContextByMessageId.set(messageId, replyContext);
+    setBounded(this.#replyContextByMessageId, messageId, replyContext, MESSAGE_CONTEXT_LIMIT);
     this.#lastReplyContextByChatId.set(chatId, replyContext);
     const streamContext = { streamId: randomUUID(), started: false };
-    this.#streamContextByMessageId.set(messageId, streamContext);
+    setBounded(this.#streamContextByMessageId, messageId, streamContext, MESSAGE_CONTEXT_LIMIT);
     this.#lastStreamContextByChatId.set(chatId, streamContext);
 
     const textParts: string[] = [];
@@ -486,7 +516,7 @@ export class WecomClient {
     const rawText = textParts.join("\n").trim();
     const { text, mentionedBot } = this.#normalizeMention(rawText, chatType);
 
-    this.#logger.info(
+    this.#logger.debug(
       `normalized inbound message (chatType=${chatType} chatId=${chatId} messageId=${messageId} textLength=${text.length})`,
     );
 

@@ -17,6 +17,7 @@ type FakeClientInstance = {
     options?: { replyToMessageId?: string; finish?: boolean; feedbackId?: string },
   ) => Promise<void>;
   sendAttachment: (chatId: string, attachment: unknown, replyToMessageId?: string) => Promise<void>;
+  resetStreamContext: (chatId: string, messageId?: string) => void;
 };
 
 const fakeClientState: {
@@ -28,6 +29,7 @@ const fakeClientState: {
   connect: ReturnType<typeof vi.fn>;
   disconnect: ReturnType<typeof vi.fn>;
   sendAttachment: ReturnType<typeof vi.fn>;
+  resetStreamContext: ReturnType<typeof vi.fn>;
 } = {
   onMessage: null,
   onKicked: null,
@@ -37,6 +39,7 @@ const fakeClientState: {
   connect: vi.fn(async () => {}),
   disconnect: vi.fn(async () => {}),
   sendAttachment: vi.fn(async () => {}),
+  resetStreamContext: vi.fn(),
 };
 
 vi.mock("./wecom-client", () => {
@@ -57,6 +60,7 @@ vi.mock("./wecom-client", () => {
         sendText: fakeClientState.sendText,
         sendStreamText: fakeClientState.sendStreamText,
         sendAttachment: fakeClientState.sendAttachment,
+        resetStreamContext: fakeClientState.resetStreamContext,
       }),
     ),
   };
@@ -76,6 +80,7 @@ function resetFakeClient(): void {
   fakeClientState.disconnect.mockImplementation(async () => {});
   fakeClientState.sendAttachment.mockReset();
   fakeClientState.sendAttachment.mockImplementation(async () => {});
+  fakeClientState.resetStreamContext.mockReset();
 }
 
 async function waitFor(condition: () => boolean, attempts = 20): Promise<void> {
@@ -1594,11 +1599,16 @@ describe("WecomIMAdapter", () => {
     // Both messages reach the agent, but only one bubble exists: a second
     // messageId would allocate a second streamId and strand the first bubble.
     expect(onOutput).toHaveBeenCalledTimes(2);
-    expect(fakeClientState.sendStreamText).toHaveBeenCalledTimes(1);
     const replyIds = new Set(
       fakeClientState.sendStreamText.mock.calls.map((call) => call[2]?.replyToMessageId),
     );
     expect(replyIds).toEqual(new Set(["msg-first"]));
+
+    // The follow-up is acknowledged inside the same bubble, not as a new message.
+    expect(fakeClientState.sendStreamText).toHaveBeenCalledTimes(2);
+    expect(
+      containsStepVariant("progress.steps.steered", fakeClientState.sendStreamText.mock.calls.at(-1)?.[1]),
+    ).toBe(true);
   });
 
   it("stops refreshing the bubble when the heartbeat is disabled", async () => {
@@ -1771,5 +1781,124 @@ describe("WecomIMAdapter", () => {
     const body = fakeClientState.sendStreamText.mock.calls[0]?.[1] as string;
     expect(containsStepVariant("progress.steps.stepDone", body)).toBe(false);
     expect(body).not.toContain("build ok");
+  });
+
+  it("drops an inbound message with no text instead of running the agent", async () => {
+    const adapter = new WecomIMAdapter(
+      {
+        botId: "bot-id",
+        secret: "secret",
+        requireMentionInGroup: true,
+      },
+      createLogger("test"),
+    );
+    const onOutput = vi.fn(async () => {});
+
+    await adapter.start(onOutput);
+    await fakeClientState.onMessage?.({
+      chatId: "user_1",
+      chatType: "dm",
+      messageId: "msg-empty",
+      text: "   ",
+      mentionedBot: false,
+    });
+
+    // An empty prompt would burn a whole agent turn on nothing.
+    expect(onOutput).not.toHaveBeenCalled();
+    expect(fakeClientState.sendStreamText).not.toHaveBeenCalled();
+  });
+
+  it("reopens the bubble when the old stream can no longer be finished", async () => {
+    const adapter = new WecomIMAdapter(
+      {
+        botId: "bot-id",
+        secret: "secret",
+        requireMentionInGroup: true,
+      },
+      createLogger("test"),
+    );
+
+    await adapter.start(async () => {});
+    await fakeClientState.onMessage?.({
+      chatId: "user_1",
+      chatType: "dm",
+      messageId: "msg-reopen",
+      text: "hello",
+      mentionedBot: false,
+    });
+
+    await adapter.input({
+      type: "assistant.delta",
+      clientSessionId: "wecom:dm:user_1",
+      agentSessionId: "agent-1",
+      text: "Final answer",
+    });
+
+    let finishAttempts = 0;
+    fakeClientState.sendStreamText.mockImplementation(
+      async (_chatId: string, _text: string, options?: { finish?: boolean }) => {
+        if (options?.finish !== true) {
+          return;
+        }
+        finishAttempts += 1;
+        if (finishAttempts === 1) {
+          throw new Error("stream already closed by the server");
+        }
+      },
+    );
+
+    await adapter.input({
+      type: "agent.run.settled",
+      clientSessionId: "wecom:dm:user_1",
+      agentSessionId: "agent-1",
+      aborted: false,
+    });
+
+    await waitFor(() => finishAttempts >= 2);
+    // The answer landed in a fresh bubble, not as a second chat message.
+    expect(finishAttempts).toBe(2);
+    expect(fakeClientState.sendText).not.toHaveBeenCalled();
+  });
+
+  it("sends at most one delivery-failure notice per cooldown window", async () => {
+    const adapter = new WecomIMAdapter(
+      {
+        botId: "bot-id",
+        secret: "secret",
+        requireMentionInGroup: true,
+      },
+      createLogger("test"),
+    );
+
+    await adapter.start(async () => {});
+    await fakeClientState.onMessage?.({
+      chatId: "user_1",
+      chatType: "dm",
+      messageId: "msg-cooldown",
+      text: "hello",
+      mentionedBot: false,
+    });
+
+    fakeClientState.sendText.mockRejectedValue(new Error("boom"));
+    await adapter.input({
+      type: "error",
+      clientSessionId: "wecom:dm:user_1",
+      kind: "agent.run.failed",
+      detail: "first",
+    });
+    await waitFor(() => fakeClientState.sendText.mock.calls.length === 2);
+
+    fakeClientState.sendText.mockClear();
+    await adapter.input({
+      type: "error",
+      clientSessionId: "wecom:dm:user_1",
+      kind: "agent.run.failed",
+      detail: "second",
+    });
+    await waitFor(() => fakeClientState.sendText.mock.calls.length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // Only the error body went out; the notice is inside its cooldown window.
+    expect(fakeClientState.sendText).toHaveBeenCalledTimes(1);
   });
 });

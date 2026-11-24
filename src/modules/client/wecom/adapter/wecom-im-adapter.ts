@@ -37,6 +37,8 @@ import { WecomClient } from "./wecom-client";
 import { buildWecomSessionId, parseWecomSessionId } from "./wecom-session";
 
 const MAX_TEXT_CHUNK = 4000;
+/** One send-failure notice per chat in this window; a flapping socket must not spam the chat. */
+const FAILURE_NOTICE_COOLDOWN_MS = 30000;
 /**
  * WeCom caps a single streamed reply at 20480 bytes and `stream.content` is
  * overwrite-by-design (every frame carries the whole body), so the in-place
@@ -276,6 +278,8 @@ export class WecomIMAdapter implements IMAdapter {
   #processing = false;
   #lastInboundMessageIdBySession = new Map<string, string>();
   #progressStateBySession = new Map<string, ProgressState>();
+  /** Last time a send-failure notice went out per chat, for the cooldown. */
+  #lastFailureNoticeAt = new Map<string, number>();
 
   async #notifySendFailure(chatId: string, error: unknown): Promise<void> {
     if (!this.#client) {
@@ -289,6 +293,13 @@ export class WecomIMAdapter implements IMAdapter {
     }
 
     const message = error instanceof Error ? error.message : String(error);
+    const now = Date.now();
+    const lastNoticeAt = this.#lastFailureNoticeAt.get(chatId) ?? 0;
+    if (now - lastNoticeAt < FAILURE_NOTICE_COOLDOWN_MS) {
+      this.#logger.debug(`suppressing repeated send-failure notice (chatId=${chatId})`);
+      return;
+    }
+    this.#lastFailureNoticeAt.set(chatId, now);
     const text = formatSendFailureNotice(this.#t, message);
 
     try {
@@ -347,6 +358,14 @@ export class WecomIMAdapter implements IMAdapter {
       }
 
       const normalizedText = text.trim();
+      if (normalizedText.length === 0) {
+        // Nothing was extractable: an emoticon, an unsupported msgtype, or an
+        // attachment that failed to download. Starting a run on an empty prompt
+        // burns a turn and answers a question nobody asked.
+        this.#logger.debug(`dropping inbound message without text (session=${clientSessionId})`);
+        return;
+      }
+
       const helpMarkdown = resolveHelpMarkdown(normalizedText, this.#t);
       if (helpMarkdown) {
         await this.#client?.sendText(chatId, helpMarkdown, messageId);
@@ -364,6 +383,7 @@ export class WecomIMAdapter implements IMAdapter {
         this.#logger.info(
           `steering the active run, keeping its bubble (session=${clientSessionId} messageId=${messageId})`,
         );
+        await this.#announceSteering(chatId, clientSessionId);
       } else {
         this.#lastInboundMessageIdBySession.set(clientSessionId, messageId);
         this.#resetProgressState(clientSessionId);
@@ -443,6 +463,7 @@ export class WecomIMAdapter implements IMAdapter {
 
   async stop(): Promise<void> {
     this.#egressQueue.length = 0;
+    this.#lastFailureNoticeAt.clear();
     for (const state of this.#progressStateBySession.values()) {
       this.#stopHeartbeat(state);
     }
@@ -557,6 +578,31 @@ export class WecomIMAdapter implements IMAdapter {
     }
   }
 
+  /**
+   * Tells the user their follow-up was folded into the run already in flight.
+   * The note rides the existing bubble instead of posting a second chat message,
+   * and the next real step replaces it.
+   */
+  async #announceSteering(chatId: string, clientSessionId: string): Promise<void> {
+    const state = this.#progressStateBySession.get(clientSessionId);
+    if (!state || !this.#client) {
+      return;
+    }
+
+    state.stepResult = pickStepVariant(this.#t("progress.steps.steered"));
+    const body = this.#buildStreamBody(state);
+    if (body === state.lastBody) {
+      return;
+    }
+    state.lastBody = body;
+
+    await this.#client.sendStreamText(chatId, body, {
+      replyToMessageId: this.#lastInboundMessageIdBySession.get(clientSessionId),
+      finish: false,
+      nonBlocking: true,
+    });
+  }
+
   async #announceStart(chatId: string, messageId: string, clientSessionId: string): Promise<void> {
     const state = this.#progressStateBySession.get(clientSessionId);
     if (!state || state.announced || !this.#client) {
@@ -655,11 +701,24 @@ export class WecomIMAdapter implements IMAdapter {
         }
       }
     } catch (error) {
-      // The stream may already have been auto-closed by the server (10 minute
-      // limit); the final answer is sent as a separate message regardless.
-      this.#logger.warn("failed to finish progress message:", error);
+      // The stream is gone — typically the server's 10 minute cap. Reopen a
+      // bubble for this message so the answer still lands where the user is
+      // looking, instead of leaving a frozen status line behind.
+      this.#logger.warn("failed to finish progress message, reopening the bubble:", error);
       if (finalText.length === 0) {
         return;
+      }
+      this.#client.resetStreamContext(chatId, replyToMessageId);
+      try {
+        await this.#client.sendStreamText(chatId, head, { replyToMessageId, finish: true });
+        if (rest.length > 0) {
+          for (const chunk of chunkText(rest, MAX_TEXT_CHUNK)) {
+            await this.#client.sendText(chatId, chunk);
+          }
+        }
+        return;
+      } catch (retryError) {
+        this.#logger.warn("failed to reopen the reply bubble, sending the answer as a message:", retryError);
       }
       for (const chunk of chunkText(finalText, MAX_TEXT_CHUNK)) {
         try {
