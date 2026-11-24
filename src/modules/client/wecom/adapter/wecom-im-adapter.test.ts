@@ -2042,4 +2042,155 @@ describe("WecomIMAdapter", () => {
       text: "你好",
     });
   });
+
+  it("mentions the asker in a group reply, and leaves direct messages alone", async () => {
+    const adapter = new WecomIMAdapter(
+      {
+        botId: "bot-id",
+        secret: "secret",
+        requireMentionInGroup: true,
+      },
+      createLogger("test"),
+    );
+
+    await adapter.start(async () => {});
+    await fakeClientState.onMessage?.({
+      chatId: "group_1",
+      chatType: "group",
+      messageId: "msg-mention",
+      text: "看下这个",
+      mentionedBot: true,
+      senderId: "u-2",
+    });
+
+    await adapter.input({
+      type: "assistant.delta",
+      clientSessionId: "wecom:group:group_1",
+      agentSessionId: "agent-1",
+      text: "已经看过了",
+    });
+    await adapter.input({
+      type: "agent.run.settled",
+      clientSessionId: "wecom:group:group_1",
+      agentSessionId: "agent-1",
+      aborted: false,
+    });
+
+    await waitFor(() =>
+      fakeClientState.sendStreamText.mock.calls.some((call) => call[2]?.finish === true),
+    );
+    const finished = fakeClientState.sendStreamText.mock.calls.find((call) => call[2]?.finish === true);
+    expect(finished?.[1]).toBe("<@u-2> 已经看过了");
+
+    // A direct message has nobody to point at.
+    await adapter.start(async () => {});
+    await fakeClientState.onMessage?.({
+      chatId: "user_1",
+      chatType: "dm",
+      messageId: "msg-dm-mention",
+      text: "你好",
+      mentionedBot: false,
+      senderId: "u-1",
+    });
+    fakeClientState.sendStreamText.mockClear();
+
+    await adapter.input({
+      type: "assistant.delta",
+      clientSessionId: "wecom:dm:user_1",
+      agentSessionId: "agent-2",
+      text: "你好呀",
+    });
+    await adapter.input({
+      type: "agent.run.settled",
+      clientSessionId: "wecom:dm:user_1",
+      agentSessionId: "agent-2",
+      aborted: false,
+    });
+
+    await waitFor(() =>
+      fakeClientState.sendStreamText.mock.calls.some((call) => call[2]?.finish === true),
+    );
+    const dmFinished = fakeClientState.sendStreamText.mock.calls.find((call) => call[2]?.finish === true);
+    expect(dmFinished?.[1]).toBe("你好呀");
+  });
+
+  it("can fall back to a literal @label or to no mention at all", async () => {
+    const textMode = new WecomIMAdapter(
+      {
+        botId: "bot-id",
+        secret: "secret",
+        requireMentionInGroup: true,
+        mentionSender: "text",
+        userLabels: { "u-2": "张三" },
+      },
+      createLogger("test"),
+    );
+
+    await textMode.start(async () => {});
+    await fakeClientState.onMessage?.({
+      chatId: "group_1",
+      chatType: "group",
+      messageId: "msg-mention-text",
+      text: "看下这个",
+      mentionedBot: true,
+      senderId: "u-2",
+    });
+    await textMode.input({
+      type: "assistant.delta",
+      clientSessionId: "wecom:group:group_1",
+      agentSessionId: "agent-3",
+      text: "好的",
+    });
+    await textMode.input({
+      type: "agent.run.settled",
+      clientSessionId: "wecom:group:group_1",
+      agentSessionId: "agent-3",
+      aborted: false,
+    });
+
+    await waitFor(() =>
+      fakeClientState.sendStreamText.mock.calls.some((call) => call[2]?.finish === true),
+    );
+    const textFinished = fakeClientState.sendStreamText.mock.calls.find((call) => call[2]?.finish === true);
+    expect(textFinished?.[1]).toBe("@张三 好的");
+
+    const noMention = new WecomIMAdapter(
+      {
+        botId: "bot-id",
+        secret: "secret",
+        requireMentionInGroup: true,
+        mentionSender: "none",
+      },
+      createLogger("test"),
+    );
+
+    fakeClientState.sendStreamText.mockClear();
+    await noMention.start(async () => {});
+    await fakeClientState.onMessage?.({
+      chatId: "group_1",
+      chatType: "group",
+      messageId: "msg-mention-none",
+      text: "看下这个",
+      mentionedBot: true,
+      senderId: "u-2",
+    });
+    await noMention.input({
+      type: "assistant.delta",
+      clientSessionId: "wecom:group:group_1",
+      agentSessionId: "agent-4",
+      text: "好的",
+    });
+    await noMention.input({
+      type: "agent.run.settled",
+      clientSessionId: "wecom:group:group_1",
+      agentSessionId: "agent-4",
+      aborted: false,
+    });
+
+    await waitFor(() =>
+      fakeClientState.sendStreamText.mock.calls.some((call) => call[2]?.finish === true),
+    );
+    const noneFinished = fakeClientState.sendStreamText.mock.calls.find((call) => call[2]?.finish === true);
+    expect(noneFinished?.[1]).toBe("好的");
+  });
 });

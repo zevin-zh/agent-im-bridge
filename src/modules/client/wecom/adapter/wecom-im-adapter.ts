@@ -102,6 +102,10 @@ type ProgressState = {
    * next step starts. Cleared when a new tool call begins.
    */
   stepResult?: string;
+  /** Chat type of the inbound message that opened this bubble. */
+  chatType?: "dm" | "group";
+  /** Sender of the latest inbound message, used to @ them in a group reply. */
+  senderId?: string;
 };
 
 /** Strips `MEDIA:` directives (including a half-received trailing one) for display. */
@@ -390,6 +394,12 @@ export class WecomIMAdapter implements IMAdapter {
         this.#lastInboundMessageIdBySession.set(clientSessionId, messageId);
         this.#resetProgressState(clientSessionId);
       }
+      const progressState = this.#progressStateBySession.get(clientSessionId);
+      if (progressState) {
+        progressState.chatType = chatType;
+        progressState.senderId = senderId;
+      }
+
       await this.#announceStart(
         chatId,
         this.#lastInboundMessageIdBySession.get(clientSessionId) ?? messageId,
@@ -722,8 +732,11 @@ export class WecomIMAdapter implements IMAdapter {
     }
 
     const finalText = this.#resolveFinalText(state, overrideText);
+    const mention = finalText.length > 0 ? this.#senderMention(state) : "";
     const body =
-      finalText.length > 0 ? finalText : pickStepVariant(this.#t("progress.steps.done"));
+      finalText.length > 0
+        ? `${mention}${finalText}`
+        : pickStepVariant(this.#t("progress.steps.done"));
     const { head, rest } = splitFinalBody(body);
     try {
       await this.#client.sendStreamText(chatId, head, { replyToMessageId, finish: true });
@@ -1007,6 +1020,22 @@ export class WecomIMAdapter implements IMAdapter {
     const label = this.#config.userLabels?.[senderId]?.trim() || senderId;
     return `[${this.#t("client.speakerPrefix")}: ${label}]
 ${text}`;
+  }
+
+  /**
+   * Points a group reply back at whoever asked. Defaults to WeCom's markdown
+   * mention syntax; `text` falls back to a literal @label, `none` disables it.
+   */
+  #senderMention(state: ProgressState): string {
+    const mode = this.#config.mentionSender ?? "markdown";
+    if (mode === "none" || !state.senderId || state.chatType !== "group") {
+      return "";
+    }
+    if (mode === "text") {
+      const label = this.#config.userLabels?.[state.senderId]?.trim() || state.senderId;
+      return `@${label} `;
+    }
+    return `<@${state.senderId}> `;
   }
 
   #resetProgressState(clientSessionId: string): void {

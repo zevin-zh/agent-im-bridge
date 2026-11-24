@@ -514,6 +514,15 @@ export interface WecomClientConfig {
    * agent who is speaking. Unmapped ids are passed through as-is.
    */
   userLabels?: Record<string, string>;
+  /**
+   * How a group reply points back at whoever asked.
+   *
+   * - `markdown` (default): prepend `<@userid>`, the mention syntax WeCom
+   *   renders as a real @ in markdown messages.
+   * - `text`: prepend a plain `@label`, which always displays literally.
+   * - `none`: no mention at all.
+   */
+  mentionSender?: "markdown" | "text" | "none";
 }
 
 export interface WeixinClientConfig {
