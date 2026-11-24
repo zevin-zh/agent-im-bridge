@@ -39,6 +39,8 @@ import { buildWecomSessionId, parseWecomSessionId } from "./wecom-session";
 const MAX_TEXT_CHUNK = 4000;
 /** One send-failure notice per chat in this window; a flapping socket must not spam the chat. */
 const FAILURE_NOTICE_COOLDOWN_MS = 30000;
+/** Per-session backlog ceiling; progress frames are the only thing that can pile up. */
+const MAX_EGRESS_EVENTS_PER_SESSION = 200;
 /**
  * WeCom caps a single streamed reply at 20480 bytes and `stream.content` is
  * overwrite-by-design (every frame carries the whole body), so the in-place
@@ -274,8 +276,8 @@ export class WecomIMAdapter implements IMAdapter {
   readonly #onQueueHere: OnQueueHere | undefined;
   #onOutput: ((event: ClientOutputEvent) => Promise<void> | void) | null = null;
   #client: WecomClient | null = null;
-  #egressQueue: ClientInputEvent[] = [];
-  #processing = false;
+  #egressQueues = new Map<string, ClientInputEvent[]>();
+  #draining = new Set<string>();
   #lastInboundMessageIdBySession = new Map<string, string>();
   #progressStateBySession = new Map<string, ProgressState>();
   /** Last time a send-failure notice went out per chat, for the cooldown. */
@@ -462,7 +464,8 @@ export class WecomIMAdapter implements IMAdapter {
   }
 
   async stop(): Promise<void> {
-    this.#egressQueue.length = 0;
+    this.#egressQueues.clear();
+    this.#draining.clear();
     this.#lastFailureNoticeAt.clear();
     for (const state of this.#progressStateBySession.values()) {
       this.#stopHeartbeat(state);
@@ -472,7 +475,6 @@ export class WecomIMAdapter implements IMAdapter {
       await this.#client.disconnect();
       this.#client = null;
     }
-    this.#processing = false;
     this.#onOutput = null;
     this.#logger.info("adapter stopped");
   }
@@ -482,99 +484,132 @@ export class WecomIMAdapter implements IMAdapter {
       throw new Error("WecomIMAdapter is not started");
     }
 
-    this.#egressQueue.push(event);
-    void this.#drainEgressQueue();
+    const queue = this.#egressQueues.get(event.clientSessionId) ?? [];
+    if (queue.length >= MAX_EGRESS_EVENTS_PER_SESSION) {
+      // Dropping the oldest is safe: the backlog can only be progress frames,
+      // and a newer frame supersedes an older one anyway.
+      queue.shift();
+      this.#logger.warn(
+        `egress queue full, dropping the oldest event (session=${event.clientSessionId})`,
+      );
+    }
+    queue.push(event);
+    this.#egressQueues.set(event.clientSessionId, queue);
+    void this.#drainSessionQueue(event.clientSessionId);
   }
 
   async isBusy(): Promise<boolean> {
-    return this.#processing || this.#egressQueue.length > 0;
+    if (this.#draining.size > 0) {
+      return true;
+    }
+    for (const queue of this.#egressQueues.values()) {
+      if (queue.length > 0) {
+        return true;
+      }
+    }
+    return false;
   }
 
-  async #drainEgressQueue(): Promise<void> {
-    if (this.#processing) {
+  /**
+   * Drains one session's queue. Sessions run independently: a slow attachment
+   * upload in one chat no longer holds up a reply in another, which the previous
+   * single global lock did.
+   */
+  async #drainSessionQueue(clientSessionId: string): Promise<void> {
+    if (this.#draining.has(clientSessionId)) {
       return;
     }
-
-    this.#processing = true;
+    this.#draining.add(clientSessionId);
     try {
-      while (this.#client && this.#egressQueue.length > 0) {
-        const event = this.#egressQueue.shift();
-        if (!event) continue;
-
-        try {
-          const target = parseWecomSessionId(event.clientSessionId);
-
-          if (event.type === "assistant.delta") {
-            const replyToMessageId = this.#lastInboundMessageIdBySession.get(event.clientSessionId);
-            await this.#handleDeltaEvent(target.chatId, event, replyToMessageId);
-            continue;
-          }
-
-          if (event.type === "agent.run.settled") {
-            // Authoritative "the agent will not continue on its own" signal:
-            // close the in-place bubble here, never at `assistant.message`
-            // (retries, compaction and follow-ups may still produce text).
-            const replyToMessageId = this.#lastInboundMessageIdBySession.get(event.clientSessionId);
-            await this.#finishProgressMessage(target.chatId, event.clientSessionId, replyToMessageId);
-            continue;
-          }
-
-          if (event.type !== "assistant.message") {
-            const statusMarkdown = renderStatusMarkdown(event, this.#t);
-            if (statusMarkdown) {
-              const replyToMessageId = this.#lastInboundMessageIdBySession.get(event.clientSessionId);
-              if (isTerminalAgentError(event) || isCompletedCommandResponse(event)) {
-                await this.#finishProgressMessage(target.chatId, event.clientSessionId, replyToMessageId);
-              }
-              await this.#client.sendText(target.chatId, statusMarkdown, replyToMessageId);
-              continue;
-            }
-
-            await this.#handleProgressEvent(target.chatId, event);
-            continue;
-          }
-
-          const replyToMessageId = this.#lastInboundMessageIdBySession.get(event.clientSessionId);
-          const state = this.#progressStateBySession.get(event.clientSessionId);
-          if (state) {
-            state.lastMessageText = event.text;
-          }
-
-          // The closing frame of the bubble is the only place the answer is
-          // delivered, so the completion event must not repeat it. When this
-          // run never reported answer text there is nothing queued for the
-          // bubble, so commit the completion text into it right here instead of
-          // posting a second message next to a "processing" bubble.
-          if (state === undefined || !state.announced) {
-            if (event.text.trim().length > 0) {
-              const chunks = chunkText(event.text, MAX_TEXT_CHUNK);
-              for (const [index, chunk] of chunks.entries()) {
-                await this.#client.sendText(target.chatId, chunk, index === 0 ? replyToMessageId : undefined);
-              }
-            }
-          } else if (state.streaming !== true) {
-            await this.#finishProgressMessage(target.chatId, event.clientSessionId, replyToMessageId, event.text);
-          }
-          for (const attachment of event.attachments ?? []) {
-            try {
-              await this.#client.sendAttachment(target.chatId, attachment, replyToMessageId);
-            } catch (attachmentError) {
-              this.#logger.error("failed to send attachment:", attachmentError);
-              await this.#notifySendFailure(target.chatId, attachmentError);
-            }
-          }
-        } catch (error) {
-          this.#logger.error("failed to send egress event:", error);
-          try {
-            const target = parseWecomSessionId(event.clientSessionId);
-            await this.#notifySendFailure(target.chatId, error);
-          } catch (notifyError) {
-            this.#logger.error("failed to handle egress send failure:", notifyError);
-          }
+      while (this.#client) {
+        const queue = this.#egressQueues.get(clientSessionId);
+        const event = queue?.shift();
+        if (!event) {
+          break;
         }
+        await this.#handleEgressEvent(event);
       }
     } finally {
-      this.#processing = false;
+      this.#draining.delete(clientSessionId);
+      const queue = this.#egressQueues.get(clientSessionId);
+      if (queue !== undefined && queue.length === 0) {
+        this.#egressQueues.delete(clientSessionId);
+      }
+    }
+  }
+
+  async #handleEgressEvent(event: ClientInputEvent): Promise<void> {
+    try {
+      const target = parseWecomSessionId(event.clientSessionId);
+
+      if (event.type === "assistant.delta") {
+        const replyToMessageId = this.#lastInboundMessageIdBySession.get(event.clientSessionId);
+        await this.#handleDeltaEvent(target.chatId, event, replyToMessageId);
+        return;
+      }
+
+      if (event.type === "agent.run.settled") {
+        // Authoritative "the agent will not continue on its own" signal: close
+        // the in-place bubble here, never at `assistant.message` (retries,
+        // compaction and follow-ups may still produce text).
+        const replyToMessageId = this.#lastInboundMessageIdBySession.get(event.clientSessionId);
+        await this.#finishProgressMessage(target.chatId, event.clientSessionId, replyToMessageId);
+        return;
+      }
+
+      if (event.type !== "assistant.message") {
+        const statusMarkdown = renderStatusMarkdown(event, this.#t);
+        if (statusMarkdown) {
+          const replyToMessageId = this.#lastInboundMessageIdBySession.get(event.clientSessionId);
+          if (isTerminalAgentError(event) || isCompletedCommandResponse(event)) {
+            await this.#finishProgressMessage(target.chatId, event.clientSessionId, replyToMessageId);
+          }
+          await this.#client!.sendText(target.chatId, statusMarkdown, replyToMessageId);
+          return;
+        }
+
+        await this.#handleProgressEvent(target.chatId, event);
+        return;
+      }
+
+      const replyToMessageId = this.#lastInboundMessageIdBySession.get(event.clientSessionId);
+      const state = this.#progressStateBySession.get(event.clientSessionId);
+      if (state) {
+        state.lastMessageText = event.text;
+      }
+
+      // The closing frame of the bubble is the only place the answer is
+      // delivered, so the completion event must not repeat it. When this run
+      // never reported answer text there is nothing queued for the bubble, so
+      // commit the completion text into it right here instead of posting a
+      // second message next to a "processing" bubble.
+      if (state === undefined || !state.announced) {
+        if (event.text.trim().length > 0) {
+          const chunks = chunkText(event.text, MAX_TEXT_CHUNK);
+          for (const [index, chunk] of chunks.entries()) {
+            await this.#client!.sendText(target.chatId, chunk, index === 0 ? replyToMessageId : undefined);
+          }
+        }
+      } else if (state.streaming !== true) {
+        await this.#finishProgressMessage(target.chatId, event.clientSessionId, replyToMessageId, event.text);
+      }
+
+      for (const attachment of event.attachments ?? []) {
+        try {
+          await this.#client!.sendAttachment(target.chatId, attachment, replyToMessageId);
+        } catch (attachmentError) {
+          this.#logger.error("failed to send attachment:", attachmentError);
+          await this.#notifySendFailure(target.chatId, attachmentError);
+        }
+      }
+    } catch (error) {
+      this.#logger.error("failed to send egress event:", error);
+      try {
+        const target = parseWecomSessionId(event.clientSessionId);
+        await this.#notifySendFailure(target.chatId, error);
+      } catch (notifyError) {
+        this.#logger.error("failed to handle egress send failure:", notifyError);
+      }
     }
   }
 

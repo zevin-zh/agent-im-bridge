@@ -83,7 +83,7 @@ function resetFakeClient(): void {
   fakeClientState.resetStreamContext.mockReset();
 }
 
-async function waitFor(condition: () => boolean, attempts = 20): Promise<void> {
+async function waitFor(condition: () => boolean, attempts = 200): Promise<void> {
   for (let index = 0; index < attempts; index += 1) {
     if (condition()) {
       return;
@@ -1777,10 +1777,29 @@ describe("WecomIMAdapter", () => {
       result: "build ok",
     });
 
-    await waitFor(() => fakeClientState.sendStreamText.mock.calls.length === 1);
-    const body = fakeClientState.sendStreamText.mock.calls[0]?.[1] as string;
-    expect(containsStepVariant("progress.steps.stepDone", body)).toBe(false);
-    expect(body).not.toContain("build ok");
+    await adapter.input({
+      type: "assistant.delta",
+      clientSessionId: "wecom:dm:user_1",
+      agentSessionId: "agent-1",
+      text: "All done",
+    });
+    await adapter.input({
+      type: "agent.run.settled",
+      clientSessionId: "wecom:dm:user_1",
+      agentSessionId: "agent-1",
+      aborted: false,
+    });
+
+    // The closing frame always lands, so this does not depend on whether the
+    // random step line happened to match the opening line.
+    await waitFor(() =>
+      fakeClientState.sendStreamText.mock.calls.some((call) => call[2]?.finish === true),
+    );
+    for (const call of fakeClientState.sendStreamText.mock.calls) {
+      const body = call[1] as string;
+      expect(containsStepVariant("progress.steps.stepDone", body)).toBe(false);
+      expect(body).not.toContain("build ok");
+    }
   });
 
   it("drops an inbound message with no text instead of running the agent", async () => {
@@ -1900,5 +1919,67 @@ describe("WecomIMAdapter", () => {
 
     // Only the error body went out; the notice is inside its cooldown window.
     expect(fakeClientState.sendText).toHaveBeenCalledTimes(1);
+  });
+
+  it("drains egress queues per session so a slow chat does not block another", async () => {
+    const adapter = new WecomIMAdapter(
+      {
+        botId: "bot-id",
+        secret: "secret",
+        requireMentionInGroup: true,
+      },
+      createLogger("test"),
+    );
+
+    await adapter.start(async () => {});
+    await fakeClientState.onMessage?.({
+      chatId: "user_a",
+      chatType: "dm",
+      messageId: "msg-a",
+      text: "hello a",
+      mentionedBot: false,
+    });
+    await fakeClientState.onMessage?.({
+      chatId: "user_b",
+      chatType: "dm",
+      messageId: "msg-b",
+      text: "hello b",
+      mentionedBot: false,
+    });
+
+    const delivered: string[] = [];
+    let releaseA: (() => void) | undefined;
+    fakeClientState.sendStreamText.mockImplementation(async (chatId: string) => {
+      if (chatId === "user_a") {
+        await new Promise<void>((resolve) => {
+          releaseA = resolve;
+        });
+        delivered.push("a");
+        return;
+      }
+      delivered.push("b");
+    });
+
+    await adapter.input({
+      type: "assistant.tool.running",
+      clientSessionId: "wecom:dm:user_a",
+      agentSessionId: "agent-a",
+      toolName: "bash",
+      toolCallId: "call-a",
+    });
+    await adapter.input({
+      type: "assistant.tool.running",
+      clientSessionId: "wecom:dm:user_b",
+      agentSessionId: "agent-b",
+      toolName: "bash",
+      toolCallId: "call-b",
+    });
+
+    // Chat B is delivered while chat A is still stuck in its send.
+    await waitFor(() => delivered.includes("b"));
+    expect(delivered).not.toContain("a");
+
+    releaseA?.();
+    await waitFor(() => delivered.includes("a"));
   });
 });

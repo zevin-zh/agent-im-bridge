@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, stat, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { basename, extname, join } from "node:path";
@@ -9,6 +9,12 @@ import type { OutboundAttachment, WecomClientConfig, WecomInboundMessage } from 
 
 const DEFAULT_WEBSOCKET_URL = "wss://openws.work.weixin.qq.com";
 const MEDIA_TEMP_DIR = join(tmpdir(), "agent-bridge-wecom-media");
+/** Attachments larger than this are dropped instead of written to disk. */
+const MAX_MEDIA_BYTES = 20 * 1024 * 1024;
+/** Downloaded attachments are only useful while the agent works on them. */
+const MEDIA_TEMP_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/** Don't walk the media directory on every download. */
+const MEDIA_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 const IMAGE_SIGNATURE_PNG = Buffer.from("89504e470d0a1a0a", "hex");
 const IMAGE_SIGNATURE_JPG = Buffer.from("ffd8ff", "hex");
 // The WeCom docs designate body.msgid as the dedup key for inbound callbacks.
@@ -146,6 +152,7 @@ export class WecomClient {
   #client: SdkClientLike | null = null;
   #kicked = false;
   #processedMessageIds = new Set<string>();
+  #mediaPrunedAt = 0;
   #replyReqIdByMessageId = new Map<string, string>();
   #lastChatReqId = new Map<string, string>();
   #replyContextByMessageId = new Map<string, ReplyContext>();
@@ -215,6 +222,40 @@ export class WecomClient {
         rejectOnce(error, "connect");
       }
     });
+    void this.#maybePruneMediaDir();
+  }
+
+  /**
+   * Drops downloaded attachments that outlived their usefulness. Runs at most
+   * once an hour, on connect and before a download, so a quiet channel does not
+   * pay for a directory walk it does not need.
+   */
+  async #maybePruneMediaDir(): Promise<void> {
+    const now = Date.now();
+    if (now - this.#mediaPrunedAt < MEDIA_PRUNE_INTERVAL_MS) {
+      return;
+    }
+    this.#mediaPrunedAt = now;
+
+    try {
+      const entries = await readdir(MEDIA_TEMP_DIR);
+      const cutoff = now - MEDIA_TEMP_TTL_MS;
+      let removed = 0;
+      for (const name of entries) {
+        const path = join(MEDIA_TEMP_DIR, name);
+        const info = await stat(path).catch(() => null);
+        if (!info?.isFile() || info.mtimeMs >= cutoff) {
+          continue;
+        }
+        await unlink(path).catch(() => undefined);
+        removed += 1;
+      }
+      if (removed > 0) {
+        this.#logger.info(`pruned ${removed} stale attachment(s) from ${MEDIA_TEMP_DIR}`);
+      }
+    } catch (error) {
+      this.#logger.debug("failed to prune the media directory:", error);
+    }
   }
 
   #toConnectionError(error: unknown, websocketUrl: string, phase: "connect" | "subscribe"): Error {
@@ -558,11 +599,29 @@ export class WecomClient {
     if (chatType !== "group") {
       return { text, mentionedBot: false };
     }
-    const match = text.match(/^@(\S+)\s*(.*)$/s);
-    if (!match) {
+
+    const botName = this.#config.botName?.trim();
+    let remaining = text;
+    let mentionedBot = false;
+
+    // Strip every leading mention. Only one naming this bot counts as a mention
+    // of this bot; the rest are people the user is addressing instead.
+    for (;;) {
+      const match = remaining.match(/^@(\S+)\s*/);
+      if (!match) {
+        break;
+      }
+      const name = match[1] ?? "";
+      if (!botName || name === botName) {
+        mentionedBot = true;
+      }
+      remaining = remaining.slice(match[0].length);
+    }
+
+    if (!mentionedBot) {
       return { text, mentionedBot: false };
     }
-    return { text: match[2] ?? "", mentionedBot: true };
+    return { text: remaining.trim(), mentionedBot: true };
   }
 
   #extractMediaRefs(body: Record<string, any>): MediaRef[] {
@@ -615,6 +674,7 @@ export class WecomClient {
   async #downloadMediaRef(ref: MediaRef): Promise<string | null> {
     try {
       await ensureMediaDir();
+      await this.#maybePruneMediaDir();
       let bytes: Buffer;
       let fileName = ref.fileName;
       if (ref.base64) {
@@ -627,6 +687,12 @@ export class WecomClient {
         bytes = downloaded.buffer;
         fileName = fileName ?? downloaded.filename;
       } else {
+        return null;
+      }
+      if (bytes.length > MAX_MEDIA_BYTES) {
+        this.#logger.warn(
+          `dropping ${ref.kind} of ${bytes.length} bytes, over the ${MAX_MEDIA_BYTES} byte limit`,
+        );
         return null;
       }
 

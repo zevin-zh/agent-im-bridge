@@ -180,6 +180,14 @@ WeCom sends an `enter_chat` event every time someone opens the bot conversation,
 
 Editing the pool means editing that array and rebuilding — there is no config key. Keep the lines short: WeCom renders this as a plain text reply in the chat window.
 
+## Mentions, attachments and queueing
+
+Set `botName` to the bot's display name so that a group message only counts as a call when the user @-mentions that name. Without it, any leading `@` is treated as a mention, which is the pre-existing behavior. Every leading `@name` is stripped from the prompt either way.
+
+Images and files sent to the bot are downloaded into the OS temp directory, capped at 20 MB per file, and referenced in the prompt by path. Files older than 7 days are pruned when the client connects and at most once an hour after that.
+
+Outbound events are queued per chat session and drained independently, so a slow attachment upload in one conversation does not delay a reply in another. Each queue holds at most 200 events; progress frames are the only thing that can pile up, and the oldest is dropped when the ceiling is hit.
+
 ## Logs and rotation
 
 The process logs at `info` by default. Per-event chatter — every SDK frame, every inbound message, every tool event the core forwards — is logged at `debug` instead, so a busy channel does not write megabytes of noise. Set `LOG_LEVEL=debug` in the service environment when that trace is actually needed.

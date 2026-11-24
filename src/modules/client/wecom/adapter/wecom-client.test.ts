@@ -572,4 +572,54 @@ describe("WecomClient", () => {
 
     rmSync(filePath, { force: true });
   });
+
+  it("only counts an @ of the configured bot name as a mention", async () => {
+    const client = new WecomClient(
+      {
+        botId: "bot-id",
+        secret: "secret",
+        botName: "瓦达西",
+      },
+      createLogger("test"),
+    );
+    const onMessage = vi.fn(async () => {});
+    client.setOnMessage(onMessage);
+    const connecting = client.connect();
+    latestClient().emit("authenticated");
+    await connecting;
+    const sdkClient = latestClient();
+
+    const emitGroupText = async (messageId: string, content: string) => {
+      sdkClient.emit("message.text", {
+        headers: { req_id: `req-${messageId}` },
+        body: {
+          msgid: messageId,
+          chatid: "group_1",
+          chattype: "group",
+          from: { userid: "user_2" },
+          msgtype: "text",
+          text: { content },
+        },
+      } satisfies MockFrame);
+      await waitFor(() => onMessage.mock.calls.length === 1);
+      const message = onMessage.mock.calls[0]?.[0] as { text: string; mentionedBot: boolean };
+      onMessage.mockClear();
+      return message;
+    };
+
+    // Someone else's @ is not a call to this bot.
+    const other = await emitGroupText("msg-other", "@张三 你看下这个");
+    expect(other.mentionedBot).toBe(false);
+    expect(other.text).toBe("@张三 你看下这个");
+
+    // This bot first, then someone else: the other @ is not part of the prompt.
+    const mixed = await emitGroupText("msg-mixed", "@瓦达西 @张三 帮忙看下");
+    expect(mixed.mentionedBot).toBe(true);
+    expect(mixed.text).toBe("帮忙看下");
+
+    // Someone else first, then this bot: still a mention, still stripped.
+    const trailing = await emitGroupText("msg-trailing", "@张三 @瓦达西 看下");
+    expect(trailing.mentionedBot).toBe(true);
+    expect(trailing.text).toBe("看下");
+  });
 });

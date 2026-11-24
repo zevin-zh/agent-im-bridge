@@ -503,6 +503,12 @@ export interface WecomClientConfig {
    * - `raw`: a truncated excerpt of the tool result, prefixed with `Result:`.
    */
   stepResultDetail?: "status" | "raw";
+  /**
+   * The bot's display name as it appears in group @-mentions. When set, only an
+   * @ of that name counts as a mention of this bot; unset keeps the older
+   * behavior where any leading @ does.
+   */
+  botName?: string;
 }
 
 export interface WeixinClientConfig {
