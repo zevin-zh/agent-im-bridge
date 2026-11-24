@@ -114,6 +114,18 @@ type StreamContext = {
   started: boolean;
 };
 
+/**
+ * WeCom renders a group mention with the bot's display name, which may carry a
+ * parenthesized alias such as `瓦达西(Vaddasi)`. Compare on the base name so a
+ * client that renders either form still matches.
+ */
+function mentionKey(name: string): string {
+  return name
+    .replace(/[（(][^)）]*[)）]/g, "")
+    .trim()
+    .toLowerCase();
+}
+
 function sanitizeFileName(fileName: string): string {
   return fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
@@ -600,7 +612,8 @@ export class WecomClient {
       return { text, mentionedBot: false };
     }
 
-    const botName = this.#config.botName?.trim();
+    const configuredName = this.#config.botName?.trim();
+    const botKey = configuredName ? mentionKey(configuredName) : undefined;
     let remaining = text;
     let mentionedBot = false;
 
@@ -612,7 +625,7 @@ export class WecomClient {
         break;
       }
       const name = match[1] ?? "";
-      if (!botName || name === botName) {
+      if (botKey === undefined || mentionKey(name) === botKey) {
         mentionedBot = true;
       }
       remaining = remaining.slice(match[0].length);

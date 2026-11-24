@@ -622,4 +622,54 @@ describe("WecomClient", () => {
     expect(trailing.mentionedBot).toBe(true);
     expect(trailing.text).toBe("看下");
   });
+
+  it("matches a mention whether or not the display name carries its alias", async () => {
+    const client = new WecomClient(
+      {
+        botId: "bot-id",
+        secret: "secret",
+        botName: "瓦达西(Vaddasi)",
+      },
+      createLogger("test"),
+    );
+    const onMessage = vi.fn(async () => {});
+    client.setOnMessage(onMessage);
+    const connecting = client.connect();
+    latestClient().emit("authenticated");
+    await connecting;
+    const sdkClient = latestClient();
+
+    const emitGroupText = async (messageId: string, content: string) => {
+      sdkClient.emit("message.text", {
+        headers: { req_id: `req-${messageId}` },
+        body: {
+          msgid: messageId,
+          chatid: "group_1",
+          chattype: "group",
+          from: { userid: "user_2" },
+          msgtype: "text",
+          text: { content },
+        },
+      } satisfies MockFrame);
+      await waitFor(() => onMessage.mock.calls.length === 1);
+      const message = onMessage.mock.calls[0]?.[0] as { text: string; mentionedBot: boolean };
+      onMessage.mockClear();
+      return message;
+    };
+
+    const withAlias = await emitGroupText("msg-alias", "@瓦达西(Vaddasi) 帮忙看下");
+    expect(withAlias.mentionedBot).toBe(true);
+    expect(withAlias.text).toBe("帮忙看下");
+
+    // Same bot, rendered without the alias by some clients.
+    const withoutAlias = await emitGroupText("msg-no-alias", "@瓦达西 帮忙看下");
+    expect(withoutAlias.mentionedBot).toBe(true);
+    expect(withoutAlias.text).toBe("帮忙看下");
+
+    // Base names match on purpose: a client that renders a different alias must
+    // not make the bot deaf. The cost is that a same-named sibling bot would be
+    // treated as this one.
+    const sibling = await emitGroupText("msg-other-alias", "@瓦达西(Other) 帮忙看下");
+    expect(sibling.mentionedBot).toBe(true);
+  });
 });
