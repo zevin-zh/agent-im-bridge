@@ -509,6 +509,11 @@ export interface WecomClientConfig {
    * behavior where any leading @ does.
    */
   botName?: string;
+  /**
+   * Optional map from WeCom user id to a human label, used when telling the
+   * agent who is speaking. Unmapped ids are passed through as-is.
+   */
+  userLabels?: Record<string, string>;
 }
 
 export interface WeixinClientConfig {
@@ -860,6 +865,8 @@ export interface WecomInboundMessage {
   messageId: string;
   text: string;
   mentionedBot?: boolean;
+  /** The sender's WeCom user id (`body.from.userid`); stable, but not a display name. */
+  senderId?: string;
   raw?: unknown;
 }
 

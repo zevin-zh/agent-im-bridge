@@ -340,7 +340,7 @@ export class WecomIMAdapter implements IMAdapter {
           "this instance will keep running but can no longer receive or send messages — stop the other instance and restart this process to recover",
       );
     });
-    this.#client.setOnMessage(async ({ chatId, chatType, text, messageId, mentionedBot }) => {
+    this.#client.setOnMessage(async ({ chatId, chatType, text, messageId, mentionedBot, senderId }) => {
       if (!this.#onOutput) {
         this.#logger.warn(`dropping inbound message, adapter not ready (chatId=${chatId})`);
         return;
@@ -453,7 +453,7 @@ export class WecomIMAdapter implements IMAdapter {
       await this.#onOutput({
         type: "user.message",
         clientSessionId,
-        text,
+        text: this.#stampSpeaker(text, chatType, senderId),
       });
     });
 
@@ -993,6 +993,20 @@ export class WecomIMAdapter implements IMAdapter {
       nonBlocking: true,
     });
     state.announced = true;
+  }
+
+  /**
+   * Tells the agent who is speaking in a group. WeCom never sends a display name,
+   * so the id is used as-is unless `userLabels` maps it to something readable.
+   * Direct messages are left alone: there is only one possible speaker.
+   */
+  #stampSpeaker(text: string, chatType: "dm" | "group", senderId?: string): string {
+    if (chatType !== "group" || !senderId) {
+      return text;
+    }
+    const label = this.#config.userLabels?.[senderId]?.trim() || senderId;
+    return `[${this.#t("client.speakerPrefix")}: ${label}]
+${text}`;
   }
 
   #resetProgressState(clientSessionId: string): void {

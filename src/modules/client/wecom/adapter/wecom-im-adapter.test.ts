@@ -1641,10 +1641,11 @@ describe("WecomIMAdapter", () => {
       toolName: "bash",
       toolCallId: "call-1",
     });
-    await waitFor(() => fakeClientState.sendStreamText.mock.calls.length === 1);
+    const before = fakeClientState.sendStreamText.mock.calls.length;
 
     await vi.advanceTimersByTimeAsync(60000);
-    expect(fakeClientState.sendStreamText).toHaveBeenCalledTimes(1);
+    // No heartbeat frame was added, whether or not the step frame itself landed.
+    expect(fakeClientState.sendStreamText).toHaveBeenCalledTimes(before);
   });
 
   it("shows a status note after a step instead of the tool output", async () => {
@@ -1981,5 +1982,64 @@ describe("WecomIMAdapter", () => {
 
     releaseA?.();
     await waitFor(() => delivered.includes("a"));
+  });
+
+  it("tells the agent who is speaking in a group, using labels when configured", async () => {
+    const adapter = new WecomIMAdapter(
+      {
+        botId: "bot-id",
+        secret: "secret",
+        requireMentionInGroup: true,
+        userLabels: { "u-1": "张三" },
+      },
+      createLogger("test"),
+    );
+    const onOutput = vi.fn(async () => {});
+
+    await adapter.start(onOutput);
+
+    await fakeClientState.onMessage?.({
+      chatId: "group_1",
+      chatType: "group",
+      messageId: "msg-group-1",
+      text: "看下这个",
+      mentionedBot: true,
+      senderId: "u-2",
+    });
+    expect(onOutput).toHaveBeenLastCalledWith({
+      type: "user.message",
+      clientSessionId: "wecom:group:group_1",
+      text: "[speaker: u-2]\n看下这个",
+    });
+
+    // A mapped id becomes a readable name.
+    await fakeClientState.onMessage?.({
+      chatId: "group_1",
+      chatType: "group",
+      messageId: "msg-group-2",
+      text: "我也是",
+      mentionedBot: true,
+      senderId: "u-1",
+    });
+    expect(onOutput).toHaveBeenLastCalledWith({
+      type: "user.message",
+      clientSessionId: "wecom:group:group_1",
+      text: "[speaker: 张三]\n我也是",
+    });
+
+    // Direct messages have exactly one possible speaker, so no line is added.
+    await fakeClientState.onMessage?.({
+      chatId: "user_1",
+      chatType: "dm",
+      messageId: "msg-dm-1",
+      text: "你好",
+      mentionedBot: false,
+      senderId: "u-1",
+    });
+    expect(onOutput).toHaveBeenLastCalledWith({
+      type: "user.message",
+      clientSessionId: "wecom:dm:user_1",
+      text: "你好",
+    });
   });
 });

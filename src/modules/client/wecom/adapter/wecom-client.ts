@@ -570,7 +570,7 @@ export class WecomClient {
     const { text, mentionedBot } = this.#normalizeMention(rawText, chatType);
 
     this.#logger.debug(
-      `normalized inbound message (chatType=${chatType} chatId=${chatId} messageId=${messageId} textLength=${text.length})`,
+      `normalized inbound message (chatType=${chatType} chatId=${chatId} messageId=${messageId} senderId=${senderId || "n/a"} textLength=${text.length})`,
     );
 
     await this.#onMessage?.({
@@ -579,6 +579,7 @@ export class WecomClient {
       messageId,
       text,
       mentionedBot,
+      senderId: senderId || undefined,
       raw: payload,
     });
   }

@@ -184,6 +184,8 @@ Editing the pool means editing that array and rebuilding — there is no config 
 
 Set `botName` to the bot's display name so that a group message only counts as a call when the user @-mentions that name. Without it, any leading `@` is treated as a mention, which is the pre-existing behavior. Every leading `@name` is stripped from the prompt either way.
 
+In groups, the prompt is prefixed with a speaker line (`[speaker: <user id>]`) so the agent knows who is asking. WeCom never sends a display name, so `userLabels` maps ids to readable names; unmapped ids pass through as-is. Direct messages get no speaker line, since there is only one possible speaker.
+
 Images and files sent to the bot are downloaded into the OS temp directory, capped at 20 MB per file, and referenced in the prompt by path. Files older than 7 days are pruned when the client connects and at most once an hour after that.
 
 Outbound events are queued per chat session and drained independently, so a slow attachment upload in one conversation does not delay a reply in another. Each queue holds at most 200 events; progress frames are the only thing that can pile up, and the oldest is dropped when the ceiling is hit.

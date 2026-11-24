@@ -132,6 +132,7 @@ describe("WecomClient", () => {
       messageId: "msg-1",
       text: "hello",
       mentionedBot: false,
+      senderId: "user_1",
       raw: expect.any(Object),
     });
   });
@@ -168,6 +169,7 @@ describe("WecomClient", () => {
       messageId: "msg-generic-1",
       text: "hello from generic",
       mentionedBot: false,
+      senderId: "user_generic",
       raw: expect.any(Object),
     });
   });
