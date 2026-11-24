@@ -188,6 +188,8 @@ In groups, the prompt is prefixed with a speaker line (`[speaker: <user id>]`) s
 
 Group replies point back at the asker: `mentionSender` defaults to `markdown`, which prepends `<@userid>` — the mention syntax WeCom renders as a real @ in markdown messages. Use `text` for a literal `@label`, or `none` to disable it. Direct messages never get a mention.
 
+When a user quotes another message before asking, WeCom ships it as `body.quote`. Its text is flattened onto one line and prefixed as `[quoted: ...]` so the agent can answer about the cited message; image, file and voice quotes are labelled instead of downloaded.
+
 Images and files sent to the bot are downloaded into the OS temp directory, capped at 20 MB per file, and referenced in the prompt by path. Files older than 7 days are pruned when the client connects and at most once an hour after that.
 
 Outbound events are queued per chat session and drained independently, so a slow attachment upload in one conversation does not delay a reply in another. Each queue holds at most 200 events; progress frames are the only thing that can pile up, and the oldest is dropped when the ceiling is hit.

@@ -2193,4 +2193,34 @@ describe("WecomIMAdapter", () => {
     const noneFinished = fakeClientState.sendStreamText.mock.calls.find((call) => call[2]?.finish === true);
     expect(noneFinished?.[1]).toBe("好的");
   });
+
+  it("puts the quoted message into the prompt on one line", async () => {
+    const adapter = new WecomIMAdapter(
+      {
+        botId: "bot-id",
+        secret: "secret",
+        requireMentionInGroup: true,
+      },
+      createLogger("test"),
+    );
+    const onOutput = vi.fn(async () => {});
+
+    await adapter.start(onOutput);
+
+    await fakeClientState.onMessage?.({
+      chatId: "group_1",
+      chatType: "group",
+      messageId: "msg-quoted",
+      text: "这个怎么办",
+      mentionedBot: true,
+      senderId: "u-2",
+      quotedText: "上一版报错：\nTypeError: boom",
+    });
+
+    expect(onOutput).toHaveBeenLastCalledWith({
+      type: "user.message",
+      clientSessionId: "wecom:group:group_1",
+      text: "[speaker: u-2]\n[quoted: 上一版报错： / TypeError: boom]\n这个怎么办",
+    });
+  });
 });

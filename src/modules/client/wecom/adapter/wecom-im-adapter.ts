@@ -344,7 +344,7 @@ export class WecomIMAdapter implements IMAdapter {
           "this instance will keep running but can no longer receive or send messages — stop the other instance and restart this process to recover",
       );
     });
-    this.#client.setOnMessage(async ({ chatId, chatType, text, messageId, mentionedBot, senderId }) => {
+    this.#client.setOnMessage(async ({ chatId, chatType, text, messageId, mentionedBot, senderId, quotedText }) => {
       if (!this.#onOutput) {
         this.#logger.warn(`dropping inbound message, adapter not ready (chatId=${chatId})`);
         return;
@@ -463,7 +463,7 @@ export class WecomIMAdapter implements IMAdapter {
       await this.#onOutput({
         type: "user.message",
         clientSessionId,
-        text: this.#stampSpeaker(text, chatType, senderId),
+        text: this.#composePrompt(text, chatType, senderId, quotedText),
       });
     });
 
@@ -1009,17 +1009,34 @@ export class WecomIMAdapter implements IMAdapter {
   }
 
   /**
-   * Tells the agent who is speaking in a group. WeCom never sends a display name,
-   * so the id is used as-is unless `userLabels` maps it to something readable.
-   * Direct messages are left alone: there is only one possible speaker.
+   * Builds the prompt the agent sees: who is speaking, what they are replying to,
+   * then the message itself.
+   *
+   * WeCom never sends a display name, so the sender id is used as-is unless
+   * `userLabels` maps it to something readable. Direct messages skip the speaker
+   * line because there is only one possible speaker. Quoted text is flattened to
+   * one line so it cannot swallow the prompt.
    */
-  #stampSpeaker(text: string, chatType: "dm" | "group", senderId?: string): string {
-    if (chatType !== "group" || !senderId) {
-      return text;
+  #composePrompt(
+    text: string,
+    chatType: "dm" | "group",
+    senderId?: string,
+    quotedText?: string,
+  ): string {
+    const lines: string[] = [];
+
+    if (chatType === "group" && senderId) {
+      const label = this.#config.userLabels?.[senderId]?.trim() || senderId;
+      lines.push(`[${this.#t("client.speakerPrefix")}: ${label}]`);
     }
-    const label = this.#config.userLabels?.[senderId]?.trim() || senderId;
-    return `[${this.#t("client.speakerPrefix")}: ${label}]
-${text}`;
+
+    const quoted = quotedText?.trim().replace(/\s*\n\s*/g, " / ");
+    if (quoted) {
+      lines.push(`[${this.#t("client.quotePrefix")}: ${quoted}]`);
+    }
+
+    lines.push(text);
+    return lines.join("\n");
   }
 
   /**

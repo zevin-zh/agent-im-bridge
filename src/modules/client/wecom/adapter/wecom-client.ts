@@ -27,6 +27,8 @@ const PROCESSED_MESSAGE_ID_LIMIT = 500;
  * only needed by a retry that will never come.
  */
 const MESSAGE_CONTEXT_LIMIT = 500;
+/** Quoted text is context, not content: keep it to one screenful. */
+const MAX_QUOTE_CHARS = 500;
 
 function setBounded<K, V>(map: Map<K, V>, key: K, value: V, limit: number): void {
   map.set(key, value);
@@ -580,6 +582,7 @@ export class WecomClient {
       text,
       mentionedBot,
       senderId: senderId || undefined,
+      quotedText: this.#extractQuoteText(body.quote),
       raw: payload,
     });
   }
@@ -636,6 +639,52 @@ export class WecomClient {
       return { text, mentionedBot: false };
     }
     return { text: remaining.trim(), mentionedBot: true };
+  }
+
+  /**
+   * Flattens a quoted message into the text the agent should see. WeCom ships the
+   * quote inside `body.quote` and only text-ish types carry readable content;
+   * images, files and voice are named so the agent at least knows what was cited.
+   */
+  #extractQuoteText(quote: Record<string, any> | undefined): string | undefined {
+    if (!quote || typeof quote !== "object") {
+      return undefined;
+    }
+
+    const msgtype = String(quote.msgtype ?? "").toLowerCase();
+    const parts: string[] = [];
+    if (msgtype === "text") {
+      const content = String(quote.text?.content ?? "").trim();
+      if (content) {
+        parts.push(content);
+      }
+    }
+    if (msgtype === "mixed") {
+      const items = Array.isArray(quote.mixed?.msg_item) ? quote.mixed.msg_item : [];
+      for (const item of items) {
+        if (String(item?.msgtype ?? "").toLowerCase() === "text") {
+          const content = String(item?.text?.content ?? "").trim();
+          if (content) {
+            parts.push(content);
+          }
+        }
+      }
+    }
+    if (msgtype === "image") {
+      parts.push("[image]");
+    }
+    if (msgtype === "file") {
+      parts.push("[file]");
+    }
+    if (msgtype === "voice") {
+      parts.push("[voice]");
+    }
+
+    const text = parts.join("\n").trim();
+    if (!text) {
+      return undefined;
+    }
+    return text.length > MAX_QUOTE_CHARS ? `${text.slice(0, MAX_QUOTE_CHARS)}…` : text;
   }
 
   #extractMediaRefs(body: Record<string, any>): MediaRef[] {

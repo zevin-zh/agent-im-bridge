@@ -876,6 +876,8 @@ export interface WecomInboundMessage {
   mentionedBot?: boolean;
   /** The sender's WeCom user id (`body.from.userid`); stable, but not a display name. */
   senderId?: string;
+  /** Text of a message the user quoted, when this message is a reply to one. */
+  quotedText?: string;
   raw?: unknown;
 }
 

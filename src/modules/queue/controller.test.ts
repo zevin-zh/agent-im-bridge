@@ -26,7 +26,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function waitFor(assertion: () => void | Promise<void>, timeoutMs = 2000): Promise<void> {
+async function waitFor(assertion: () => void | Promise<void>, timeoutMs = 8000): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {

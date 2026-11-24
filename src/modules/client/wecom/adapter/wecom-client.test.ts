@@ -674,4 +674,61 @@ describe("WecomClient", () => {
     const sibling = await emitGroupText("msg-other-alias", "@瓦达西(Other) 帮忙看下");
     expect(sibling.mentionedBot).toBe(true);
   });
+
+  it("passes a quoted message through as text", async () => {
+    const client = new WecomClient(
+      {
+        botId: "bot-id",
+        secret: "secret",
+      },
+      createLogger("test"),
+    );
+    const onMessage = vi.fn(async () => {});
+    client.setOnMessage(onMessage);
+    const connecting = client.connect();
+    latestClient().emit("authenticated");
+    await connecting;
+    const sdkClient = latestClient();
+
+    sdkClient.emit("message.text", {
+      headers: { req_id: "req-quote-1" },
+      body: {
+        msgid: "msg-quote-1",
+        chattype: "group",
+        chatid: "group_1",
+        from: { userid: "u-2" },
+        msgtype: "text",
+        text: { content: "@Bot 这个怎么办" },
+        quote: {
+          msgtype: "text",
+          text: { content: "上一版的报错日志在这里" },
+        },
+      },
+    } satisfies MockFrame);
+
+    await waitFor(() => onMessage.mock.calls.length === 1);
+    const message = onMessage.mock.calls[0]?.[0] as { quotedText?: string };
+    expect(message.quotedText).toBe("上一版的报错日志在这里");
+
+    // Media quotes are named, not downloaded: the agent only needs to know what was cited.
+    sdkClient.emit("message.text", {
+      headers: { req_id: "req-quote-2" },
+      body: {
+        msgid: "msg-quote-2",
+        chattype: "group",
+        chatid: "group_1",
+        from: { userid: "u-2" },
+        msgtype: "text",
+        text: { content: "@Bot 看这个图" },
+        quote: {
+          msgtype: "image",
+          image: { url: "https://example.com/a.png" },
+        },
+      },
+    } satisfies MockFrame);
+
+    await waitFor(() => onMessage.mock.calls.length === 2);
+    const mediaMessage = onMessage.mock.calls[1]?.[0] as { quotedText?: string };
+    expect(mediaMessage.quotedText).toBe("[image]");
+  });
 });
