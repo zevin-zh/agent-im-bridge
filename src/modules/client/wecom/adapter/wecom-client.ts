@@ -568,14 +568,17 @@ export class WecomClient {
     this.#lastStreamContextByChatId.set(chatId, streamContext);
 
     const textParts: string[] = [];
+    let hasUserText = false;
     const plainText = String(body.text?.content ?? "").trim();
     if (plainText) {
       textParts.push(plainText);
+      hasUserText = true;
     }
     if (String(body.msgtype ?? "").toLowerCase() === "appmsg") {
       const title = String(body.appmsg?.title ?? "").trim();
       if (title) {
         textParts.push(title);
+        hasUserText = true;
       }
     }
     if (String(body.msgtype ?? "").toLowerCase() === "mixed") {
@@ -583,7 +586,10 @@ export class WecomClient {
       for (const item of items) {
         if (String(item?.msgtype ?? "").toLowerCase() === "text") {
           const content = String(item?.text?.content ?? "").trim();
-          if (content) textParts.push(content);
+          if (content) {
+            textParts.push(content);
+            hasUserText = true;
+          }
         }
       }
     }
@@ -612,6 +618,7 @@ export class WecomClient {
       mentionedBot,
       senderId: senderId || undefined,
       quotedText: this.#extractQuoteText(body.quote),
+      hasUserText,
       raw: payload,
     });
   }

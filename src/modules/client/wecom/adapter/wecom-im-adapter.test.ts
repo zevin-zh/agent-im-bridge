@@ -1528,6 +1528,9 @@ describe("WecomIMAdapter", () => {
         botId: "bot-id",
         secret: "secret",
         requireMentionInGroup: true,
+        // Log mode gives a deterministic step line, so the first frame is
+        // guaranteed to differ from the random opening line.
+        replyProgress: "log",
       },
       createLogger("test"),
     );
@@ -2298,6 +2301,124 @@ describe("WecomIMAdapter", () => {
       type: "command.session.thinking.set",
       clientSessionId: "wecom:dm:user_1",
       level: "high",
+    });
+  });
+
+  it("merges a file and the sentence that follows it into one prompt", async () => {
+    const adapter = new WecomIMAdapter(
+      {
+        botId: "bot-id",
+        secret: "secret",
+        requireMentionInGroup: true,
+      },
+      createLogger("test"),
+    );
+    const onOutput = vi.fn(async (_event: ClientOutputEvent) => {});
+
+    await adapter.start(onOutput);
+
+    await fakeClientState.onMessage?.({
+      chatId: "user_1",
+      chatType: "dm",
+      messageId: "msg-file",
+      text: "[Received file: /tmp/report.pdf]",
+      mentionedBot: false,
+      hasUserText: false,
+    });
+
+    // Held back: no bubble, no run, nothing to answer yet.
+    expect(onOutput).not.toHaveBeenCalled();
+    expect(fakeClientState.sendStreamText).not.toHaveBeenCalled();
+
+    await fakeClientState.onMessage?.({
+      chatId: "user_1",
+      chatType: "dm",
+      messageId: "msg-explain",
+      text: "看下这个报告",
+      mentionedBot: false,
+      hasUserText: true,
+    });
+
+    await waitFor(() => onOutput.mock.calls.length === 1);
+    expect(onOutput).toHaveBeenCalledWith({
+      type: "user.message",
+      clientSessionId: "wecom:dm:user_1",
+      text: "[Received file: /tmp/report.pdf]\n看下这个报告",
+    });
+    // One run, one bubble.
+    expect(fakeClientState.sendStreamText).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends a lone attachment once the merge window expires", async () => {
+    vi.useFakeTimers();
+
+    const adapter = new WecomIMAdapter(
+      {
+        botId: "bot-id",
+        secret: "secret",
+        requireMentionInGroup: true,
+      },
+      createLogger("test"),
+    );
+    const onOutput = vi.fn(async (_event: ClientOutputEvent) => {});
+
+    await adapter.start(onOutput);
+    await fakeClientState.onMessage?.({
+      chatId: "user_1",
+      chatType: "dm",
+      messageId: "msg-lone-file",
+      text: "[Received image: /tmp/shot.png]",
+      mentionedBot: false,
+      hasUserText: false,
+    });
+    expect(onOutput).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(3000);
+    await waitFor(() => onOutput.mock.calls.length === 1);
+    expect(onOutput).toHaveBeenCalledWith({
+      type: "user.message",
+      clientSessionId: "wecom:dm:user_1",
+      text: "[Received image: /tmp/shot.png]",
+    });
+  });
+
+  it("flushes a pending attachment instead of merging it into a command", async () => {
+    const adapter = new WecomIMAdapter(
+      {
+        botId: "bot-id",
+        secret: "secret",
+        requireMentionInGroup: true,
+      },
+      createLogger("test"),
+    );
+    const onOutput = vi.fn(async (_event: ClientOutputEvent) => {});
+
+    await adapter.start(onOutput);
+
+    await fakeClientState.onMessage?.({
+      chatId: "user_1",
+      chatType: "dm",
+      messageId: "msg-file-before-command",
+      text: "[Received file: /tmp/spec.md]",
+      mentionedBot: false,
+      hasUserText: false,
+    });
+    await fakeClientState.onMessage?.({
+      chatId: "user_1",
+      chatType: "dm",
+      messageId: "msg-command",
+      text: "/status",
+      mentionedBot: false,
+      hasUserText: true,
+    });
+
+    await waitFor(() => onOutput.mock.calls.length === 2);
+    expect(onOutput.mock.calls.map((call) => call[0]?.type)).toEqual([
+      "user.message",
+      "command.session.status",
+    ]);
+    expect(onOutput.mock.calls[0]?.[0]).toMatchObject({
+      text: "[Received file: /tmp/spec.md]",
     });
   });
 });

@@ -894,6 +894,8 @@ export interface WecomInboundMessage {
   senderId?: string;
   /** Text of a message the user quoted, when this message is a reply to one. */
   quotedText?: string;
+  /** True when the message carried text the user typed, not just attachment placeholders. */
+  hasUserText?: boolean;
   raw?: unknown;
 }
 

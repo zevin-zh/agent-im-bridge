@@ -8,6 +8,7 @@ import type {
   OnScheduleHere,
   OnScheduleRun,
   WecomClientConfig,
+  WecomInboundMessage,
 } from "../../../../types";
 import { THINKING_LEVELS } from "../../../../types";
 import { formatSendFailureNotice, getTranslatorForCommon, type Translator } from "../../../../i18n";
@@ -43,6 +44,12 @@ const FAILURE_NOTICE_COOLDOWN_MS = 30000;
 /** Per-session backlog ceiling; progress frames are the only thing that can pile up. */
 const MAX_EGRESS_EVENTS_PER_SESSION = 200;
 /**
+ * A file and the sentence explaining it arrive as two separate WeCom messages.
+ * Hold an attachment-only message this long so the follow-up text can join it
+ * into one prompt instead of burning a turn on a bare path.
+ */
+const ATTACHMENT_MERGE_WINDOW_MS = 3000;
+/**
  * WeCom caps a single streamed reply at 20480 bytes and `stream.content` is
  * overwrite-by-design (every frame carries the whole body), so the in-place
  * bubble body must stay under that ceiling. Budgeted in bytes because a CJK
@@ -72,6 +79,16 @@ const DEFAULT_STEP_HEARTBEAT_INTERVAL_MS = 15000;
 const STREAM_MEDIA_MARKER_RE =
   /[`"']?MEDIA:\s*(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~\/|\/|[A-Za-z]:[/\\])[^\s`"']+\.\w+)[`"']?/gi;
 const STREAM_MEDIA_PARTIAL_TAIL_RE = /[`"']?MEDIA:[\s\S]*$/i;
+
+type PendingAttachment = {
+  text: string;
+  messageId: string;
+  chatId: string;
+  chatType: "dm" | "group";
+  senderId?: string;
+  quotedText?: string;
+  timer: ReturnType<typeof setTimeout>;
+};
 
 type ProgressState = {
   renderer: ProgressRenderer;
@@ -285,6 +302,9 @@ export class WecomIMAdapter implements IMAdapter {
   #draining = new Set<string>();
   #lastInboundMessageIdBySession = new Map<string, string>();
   #progressStateBySession = new Map<string, ProgressState>();
+  /** Attachment-only messages waiting for the sentence that explains them. */
+  #pendingAttachmentsBySession = new Map<string, PendingAttachment>();
+  #inboundHandler: ((message: WecomInboundMessage) => Promise<void>) | null = null;
   /** Last time a send-failure notice went out per chat, for the cooldown. */
   #lastFailureNoticeAt = new Map<string, number>();
 
@@ -345,7 +365,8 @@ export class WecomIMAdapter implements IMAdapter {
           "this instance will keep running but can no longer receive or send messages — stop the other instance and restart this process to recover",
       );
     });
-    this.#client.setOnMessage(async ({ chatId, chatType, text, messageId, mentionedBot, senderId, quotedText }) => {
+    const handleInbound = async (message: WecomInboundMessage): Promise<void> => {
+      const { chatId, chatType, text, messageId, mentionedBot, senderId, quotedText, hasUserText } = message;
       if (!this.#onOutput) {
         this.#logger.warn(`dropping inbound message, adapter not ready (chatId=${chatId})`);
         return;
@@ -357,7 +378,12 @@ export class WecomIMAdapter implements IMAdapter {
 
       const clientSessionId = buildWecomSessionId(chatType, chatId);
 
-      if (chatType === "group" && (this.#config.requireMentionInGroup ?? true) && !mentionedBot) {
+      if (
+        chatType === "group" &&
+        (this.#config.requireMentionInGroup ?? true) &&
+        !mentionedBot &&
+        !this.#pendingAttachmentsBySession.has(clientSessionId)
+      ) {
         this.#logger.debug(
           `ignoring group message without bot mention (session=${clientSessionId} messageId=${messageId})`,
         );
@@ -370,6 +396,21 @@ export class WecomIMAdapter implements IMAdapter {
         // attachment that failed to download. Starting a run on an empty prompt
         // burns a turn and answers a question nobody asked.
         this.#logger.debug(`dropping inbound message without text (session=${clientSessionId})`);
+        return;
+      }
+
+      if (hasUserText === false) {
+        // Attachment without an explanation: hold it briefly so the follow-up
+        // sentence can join it, instead of answering a bare file path.
+        this.#stashPendingAttachment({
+          chatId,
+          chatType,
+          clientSessionId,
+          messageId,
+          senderId,
+          quotedText,
+          text: normalizedText,
+        });
         return;
       }
 
@@ -387,6 +428,18 @@ export class WecomIMAdapter implements IMAdapter {
         await this.#client?.sendText(chatId, thinkingUsage, messageId);
         return;
       }
+
+      const parsedCommand = parseSlashCommand(normalizedText, clientSessionId);
+      if (parsedCommand && this.#pendingAttachmentsBySession.has(clientSessionId)) {
+        // A command is not part of the sentence that explains the attachment.
+        await this.#flushPendingAttachment(clientSessionId);
+      }
+      const pendingAttachment = parsedCommand
+        ? undefined
+        : this.#takePendingAttachment(clientSessionId);
+      const effectiveText = pendingAttachment
+        ? `${pendingAttachment.text}\n${normalizedText}`
+        : normalizedText;
 
       // One run, one bubble. A second message while the agent is still working
       // steers that run (`prompt(..., "steer")` in the pi adapter), so it must
@@ -416,7 +469,6 @@ export class WecomIMAdapter implements IMAdapter {
         clientSessionId,
       );
 
-      const parsedCommand = parseSlashCommand(normalizedText, clientSessionId);
       if (parsedCommand) {
         if (parsedCommand.type === "schedule.run" || parsedCommand.type === "schedule.run.usage") {
           // Adapter-local manual trigger (spec D7a): never reaches the core.
@@ -473,9 +525,12 @@ export class WecomIMAdapter implements IMAdapter {
       await this.#onOutput({
         type: "user.message",
         clientSessionId,
-        text: this.#composePrompt(text, chatType, senderId, quotedText),
+        text: this.#composePrompt(effectiveText, chatType, senderId, quotedText),
       });
-    });
+    };
+
+    this.#inboundHandler = handleInbound;
+    this.#client.setOnMessage(handleInbound);
 
     await this.#client.connect();
     this.#logger.info(
@@ -484,6 +539,11 @@ export class WecomIMAdapter implements IMAdapter {
   }
 
   async stop(): Promise<void> {
+    for (const entry of this.#pendingAttachmentsBySession.values()) {
+      clearTimeout(entry.timer);
+    }
+    this.#pendingAttachmentsBySession.clear();
+    this.#inboundHandler = null;
     this.#egressQueues.clear();
     this.#draining.clear();
     this.#lastFailureNoticeAt.clear();
@@ -1079,6 +1139,76 @@ export class WecomIMAdapter implements IMAdapter {
       return this.#t("client.thinkingUsage");
     }
     return null;
+  }
+
+  /**
+   * Holds an attachment-only message for a short window so the sentence that
+   * explains it can be merged in. Repeated attachments within the window stack.
+   */
+  #stashPendingAttachment(args: {
+    chatId: string;
+    chatType: "dm" | "group";
+    clientSessionId: string;
+    messageId: string;
+    senderId?: string;
+    quotedText?: string;
+    text: string;
+  }): void {
+    const existing = this.#pendingAttachmentsBySession.get(args.clientSessionId);
+    if (existing) {
+      clearTimeout(existing.timer);
+    }
+
+    const timer = setTimeout(() => {
+      void this.#flushPendingAttachment(args.clientSessionId);
+    }, ATTACHMENT_MERGE_WINDOW_MS);
+    timer.unref?.();
+
+    this.#pendingAttachmentsBySession.set(args.clientSessionId, {
+      text: existing ? `${existing.text}\n${args.text}` : args.text,
+      messageId: existing?.messageId ?? args.messageId,
+      chatId: args.chatId,
+      chatType: args.chatType,
+      senderId: args.senderId ?? existing?.senderId,
+      quotedText: existing?.quotedText ?? args.quotedText,
+      timer,
+    });
+  }
+
+  #takePendingAttachment(clientSessionId: string): PendingAttachment | undefined {
+    const entry = this.#pendingAttachmentsBySession.get(clientSessionId);
+    if (!entry) {
+      return undefined;
+    }
+    clearTimeout(entry.timer);
+    this.#pendingAttachmentsBySession.delete(clientSessionId);
+    return entry;
+  }
+
+  /**
+   * Delivers a stashed attachment on its own: the merge window expired, or a
+   * command arrived and must not absorb the path. Re-entering the inbound
+   * handler keeps one code path for bubbles, steering and progress state.
+   */
+  async #flushPendingAttachment(clientSessionId: string): Promise<void> {
+    const entry = this.#takePendingAttachment(clientSessionId);
+    if (!entry || !this.#inboundHandler) {
+      return;
+    }
+    try {
+      await this.#inboundHandler({
+        chatId: entry.chatId,
+        chatType: entry.chatType,
+        messageId: entry.messageId,
+        text: entry.text,
+        mentionedBot: true,
+        senderId: entry.senderId,
+        quotedText: entry.quotedText,
+        hasUserText: true,
+      });
+    } catch (error) {
+      this.#logger.error("failed to deliver a stashed attachment:", error);
+    }
   }
 
   #resetProgressState(clientSessionId: string): void {
