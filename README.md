@@ -1,204 +1,243 @@
 # agent-bridge
 
 [![npm version](https://img.shields.io/npm/v/%40hopgoldy%2Fagent-bridge?style=flat-square&logo=npm)](https://www.npmjs.com/package/@hopgoldy/agent-bridge)
-[![npm unpacked size](https://img.shields.io/npm/unpacked-size/%40hopgoldy%2Fagent-bridge?style=flat-square)](https://www.npmjs.com/package/@hopgoldy/agent-bridge)
-[![test status](https://img.shields.io/github/actions/workflow/status/HoPGoldy/agent-bridge/ci.yml?branch=main&style=flat-square&label=tests)](https://github.com/HoPGoldy/agent-bridge/actions/workflows/ci.yml)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D22-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f?style=flat-square)](#license)
 
-`agent-bridge` connects IM channel (feishu, weixin, wecom...) to local coding agent (pi, codex, opencode...) using a dual-adapter architecture.
+`agent-bridge` connects an IM channel (WeCom, Weixin, Feishu) to a local coding agent (pi, OpenCode) through a dual-adapter architecture: one adapter speaks to the chat platform, one drives the agent process, and the core only forwards messages between them. No harness layer, no extra tools, no extra skills.
 
-The design stays intentionally simple and compact: no harness layer, no extra tools, no extra skills, just forwarding messages from IM to the local agent.
+This fork keeps that architecture and adds a deeper WeCom experience: a single in-place reply bubble, group speaker awareness, quoted-message context, attachment housekeeping and runtime thinking-level control.
 
-## Current support
+## Supported platforms
 
 Client side:
 
-| Platform      | Image/file in | Image/file out | Emoji | Dynamic progress |
-| ------------- | ------------- | -------------- | ----- | ---------------- |
-| Feishu / Lark | ✅            | ✅             | ✅    | ✅               |
-| WeCom         | ✅            | ✅             | —     | ✅               |
-| Weixin        | ✅            | ✅             | —     | —                |
-
-- **Emoji** = platform-native emoji / reaction capability currently used by the bridge.
-- **Dynamic progress** = progress shown before the final answer arrives.
+| Platform      | Image/file in | Image/file out | Emoji | In-place progress |
+| ------------- | ------------- | -------------- | ----- | ----------------- |
+| Feishu / Lark | yes           | yes            | yes   | yes               |
+| WeCom         | yes           | yes            | -     | yes               |
+| Weixin        | yes           | yes            | -     | -                 |
 
 Agent side:
 
-| Agent           | New | Stop | Compact | Model switching | Setup guide                        |
-| --------------- | --- | ---- | ------- | --------------- | ---------------------------------- |
-| PI Coding Agent | ✅  | ✅   | ✅      | ✅              | [Guide](./docs/pi-coding-agent.md) |
-| OpenCode        | ✅  | ✅   | ✅      | ✅              | [Guide](./docs/opencode.md)        |
+| Agent           | New session | Stop | Compact | Model switch | Thinking level |
+| --------------- | ----------- | ---- | ------- | ------------ | -------------- |
+| PI Coding Agent | yes         | yes  | yes     | yes          | yes            |
+| OpenCode        | yes         | yes  | yes     | yes          | -              |
 
-> The current built-in support is intentionally small, but the architecture is designed for straightforward horizontal extension. The project will primarily maintain the integrations used in practice today, and contributions for additional client or agent adapters are welcome through forks and PRs.
-
-## Quick Start
-
-Install the CLI:
+## Quick start
 
 ```bash
 npm install -g @hopgoldy/agent-bridge
+agent-bridge add          # interactive channel setup
+agent-bridge start wecom  # start the channel you just created
+agent-bridge ls           # list configured channels
 ```
 
-The CLI currently provides these commands:
+`agent-bridge add` asks for a channel name, a client type and its config, then an agent type and its config. Everything lands in `~/.config/agent-bridge/config.json`.
+
+## CLI
+
+Channels:
 
 - `agent-bridge add`
 - `agent-bridge ls`
 - `agent-bridge remove <channel-name>`
 - `agent-bridge start <channel-name>`
-- `agent-bridge queue add`
-- `agent-bridge queue insert <queue-name> --prompt "..." [--directory <path>]`
-- `agent-bridge queue list`
+
+Scheduled tasks:
+
+- `agent-bridge schedule add`
+- `agent-bridge schedule list`
+- `agent-bridge schedule run <task-name>`
+- `agent-bridge schedule enable <task-name>` / `disable <task-name>` / `remove <task-name>`
 - `agent-bridge schedule history [task-name]`
+
+Queues:
+
+- `agent-bridge queue add`
+- `agent-bridge queue insert <queue-name> --prompt "..." [--directory <path>] [--model <model>] [--timeout 10m] [--silence 30m]`
+- `agent-bridge queue list`
+- `agent-bridge queue enable <queue-name>` / `disable <queue-name>` / `remove <queue-name>`
 - `agent-bridge queue history <queue-name>`
+- `agent-bridge queue retry <queue-name> <task-id>`
 
-Create a channel interactively:
-
-```bash
-agent-bridge add
-```
-
-The prompt flow currently asks for:
-
-- channel name
-- select client module type
-- set client config...
-- select agent module type
-- set agent config...
-
-Start the configured channel:
-
-```bash
-agent-bridge start <channel-name>
-```
-
-List configured channels:
-
-```bash
-agent-bridge ls
-```
-
-Remove a configured channel:
-
-```bash
-agent-bridge remove <channel-name>
-```
-
-Config file: `~/.config/agent-bridge/config.json`
-
-Architecture overview: [`docs/architecture-design.md`](./docs/architecture-design.md)
-
-Command usage across IM adapters: [`docs/command-system.md`](./docs/command-system.md)
-
-You can also **adopt an existing provider session** (for example one from the pi or OpenCode TUI) into a chat with `/resume <provider-session-id>` (`/r`): the agent context and working directory are fully restored and later messages continue that session. See [`docs/command-system.md`](./docs/command-system.md).
-
-Scheduled tasks (cron-style agent sessions with file-based prompts): [`docs/scheduled-tasks.md`](./docs/scheduled-tasks.md)
-
-Event queues (FIFO agent task queues with file-based prompts, worker concurrency and chat-bound result delivery): [`docs/event-queue.md`](./docs/event-queue.md)
-
-Event queues let you run a stream of agent prompts through the same pipeline as scheduled tasks: a queue definition (`queues/<name>.md`) carries a worker count, an optional model and a shared-context body appended to every task; tasks are inserted with `agent-bridge queue insert` and consumed FIFO by the owning channel's controller, which delivers each result (or failure/timeout notice) to the chat bound with `/queue-here`. Like scheduled tasks, queue runs are fully isolated from the target chat's own session. Both scheduled tasks and event queues use the same completion protocol: the run ends when the agent appends the `BRIDGE_TASK_STATUS_DONE` marker as the last line of its final message, at which point the full accumulated transcript is delivered once; a silence probe asks an inactive run whether it is finished, and the wall-clock `timeout` remains the hard cap.
-
-## Start a session in a specific directory
-
-From any IM chat, `/new <path>` starts the next agent session in that directory instead of the bridge's working directory:
-
-```text
-/new ~/project-learn/demo
-```
-
-A directory given once is remembered per chat (persisted in the channel's client session store): a later bare `/new` reuses it, and only falls back to the bridge's working directory when nothing was ever chosen. Paths are validated locally before a session is created — invalid ones are rejected immediately and never remembered — see [`docs/command-system.md`](./docs/command-system.md) for details.
-
-If the bot is not strictly private, restrict the directories users may start sessions in via `defaults.allowedWorkingDirectoryRoots` in `~/.config/agent-bridge/config.json`:
+## Configuration
 
 ```json
 {
+  "channels": {
+    "wecom": {
+      "common": { "language": "zh-CN" },
+      "client": {
+        "type": "wecom",
+        "config": {
+          "botId": "…",
+          "secret": "…",
+          "requireMentionInGroup": true,
+          "botName": "瓦达西(Vaddasi)"
+        }
+      },
+      "agent": {
+        "type": "pi-coding-agent",
+        "config": {
+          "bin": "/usr/bin/pi",
+          "sessionDir": "/root/.pi/agent/sessions/--root-wecom--",
+          "model": "company/minimax-m2.7",
+          "extraArgs": ["--thinking", "high"]
+        }
+      }
+    }
+  },
   "defaults": {
-    "allowedWorkingDirectoryRoots": ["/Users/wesley/project-learn"]
-  }
-}
-```
-
-When configured, user-originated `/new <path>` targets (including remembered defaults) must resolve inside one of the roots. The client-side cwd fallback for a bare `/new` and the channel-level agent configuration are trusted and never checked.
-
-The bridge also releases agent sessions that are idle: a session whose last observable activity is older than `defaults.agentIdleTimeoutMs` (default `24h`) is stopped and released. The idle timer is pure inactivity — it tracks the last run event and reschedules whenever one arrives; there is no busy check. The agent adapters defend themselves internally (an `abort()` when there is no active turn is a no-op), and `/model` performs no busy gating.
-
-## Prefix incoming messages with a timestamp
-
-Some agents benefit from seeing when a message was sent. Set `defaults.messageTimestamp` to have the bridge prepend one `[YYYY-MM-DD HH:mm:ss]` line to every user message that reaches the agent:
-
-```json
-{
-  "defaults": {
-    "messageTimestamp": true
-  }
-}
-```
-
-The clock is read when the message arrives, so a long-lived channel never stamps stale times. Add `timeZone` (any IANA name) to pin the zone — without it the host's local zone is used:
-
-```json
-{
-  "defaults": {
+    "agentIdleTimeoutMs": 1800000,
     "messageTimestamp": { "timeZone": "Asia/Shanghai" }
   }
 }
 ```
 
-Only text typed by a person in the IM app is stamped. Prompts injected by scheduled tasks and event queues are left untouched, because their bodies (including the `BRIDGE_TASK_STATUS_DONE` marker) are part of the completion protocol. The setting is off by default; `false` is the same as omitting it. Note that pi already records a millisecond timestamp on every message, so this option exists to make the time visible to the model in the message body itself, not to add information the agent adapter lacks.
+### Channel common
 
-## Stream replies in place
+| Key           | Type                | Meaning                                       |
+| ------------- | ------------------- | --------------------------------------------- |
+| `channelName` | string              | Auto-filled from the map key                  |
+| `language`    | `"zh-CN" \| "en-US"` | Language of progress lines and command replies |
 
-WeCom is the first client that renders an answer while the agent is still writing. Instead of one message per assistant turn (which reads as a burst of separate bubbles), the bridge keeps rewriting the single reply bubble it already opened for that message, then closes it once the run is settled.
+### WeCom client config
 
-This is on by default for clients that support it. Turn it off with:
+| Key                    | Type                              | Default                              | Meaning                                                                                   |
+| ---------------------- | --------------------------------- | ------------------------------------ | ----------------------------------------------------------------------------------------- |
+| `botId`                | string                            | -                                    | Smart-robot id                                                                            |
+| `secret`               | string                            | -                                    | Smart-robot secret                                                                        |
+| `websocketUrl`         | string                            | `wss://openws.work.weixin.qq.com`    | Custom endpoint                                                                            |
+| `requireMentionInGroup`| boolean                           | `true`                               | Only answer group messages that @ the bot                                                 |
+| `botName`              | string                            | -                                    | Bot display name used to verify group mentions; unset means any leading `@` counts         |
+| `userLabels`           | `Record<string, string>`          | -                                    | Maps WeCom user ids to readable names for the speaker line                                |
+| `mentionSender`        | `"markdown" \| "text" \| "none"`  | `"markdown"`                         | How a group reply points at the asker; see the caveat below                                |
+| `replyProgress`        | `"steps" \| "log"`                | `"steps"`                            | Progress style: one randomized step line, or the per-tool log                              |
+| `streamAnswer`         | boolean                           | `false`                              | `true` streams answer text into the bubble; `false` lands it in one closing frame           |
+| `showStepResult`       | boolean                           | `true`                               | Show a short note after each completed step                                                |
+| `stepResultDetail`     | `"status" \| "raw"`               | `"status"`                           | `status` shows a phrase, `raw` shows a truncated excerpt of the tool result                |
+| `stepHeartbeatMs`      | number                            | `15000`                              | Refresh cadence of a motionless bubble; `0` disables the heartbeat                         |
 
-```json
-{
-  "defaults": {
-    "streaming": false
-  }
-}
+### PI agent config
+
+| Key          | Type       | Default | Meaning                                                     |
+| ------------ | ---------- | ------- | ----------------------------------------------------------- |
+| `bin`        | string     | `"pi"`  | pi executable                                               |
+| `sessionDir` | string     | -       | Where pi stores session files                               |
+| `model`      | string     | -       | `provider/modelId`, optionally with `:<thinking>` shorthand |
+| `extraArgs`  | `string[]` | `[]`    | Extra pi flags, for example `["--thinking", "high"]`        |
+
+### Defaults
+
+| Key                            | Type                              | Meaning                                                                 |
+| ------------------------------ | --------------------------------- | ----------------------------------------------------------------------- |
+| `agentIdleTimeoutMs`           | number                            | Idle time before a session's agent process is released                  |
+| `allowedWorkingDirectoryRoots` | `string[]`                        | Allowlist for `/new <path>`; unset means permissive                      |
+| `messageTimestamp`             | `{timeZone} \| true \| false`     | Prefix inbound text with its arrival time                                |
+| `streaming`                    | boolean                           | `false` forces one completed message per turn and drops delta frames     |
+
+## WeCom channel behaviour
+
+### One run, one bubble
+
+Each inbound message opens a single streamed reply bubble. A follow-up that arrives while the agent is still working steers the active run instead of opening a second bubble, and the bubble says so. The bubble is closed on `agent_settled`, never on `agent_end`, because pi may still retry, compact or accept steering after `agent_end`.
+
+### Step line
+
+While the agent works the bubble shows one line, drawn from a pool of 70 programmer-flavored phrases and pinned for the duration of that tool call, so `running` / `update` / `done` events do not reshuffle it. Tool names, command lines, arguments and results never reach the chat. With `replyProgress: "log"` the older per-tool lines come back.
+
+When a step finishes, `showStepResult` adds one short status note under the line. `stepResultDetail: "raw"` swaps that note for a truncated excerpt of the tool result.
+
+A frame whose body has not changed is skipped entirely: those frames would only repaint the same text.
+
+### Heartbeat
+
+A long step refreshes the line with a rotating dot every `stepHeartbeatMs` (15s by default). Every stream frame rewrites the whole body and the client repaints on each one, so the cadence trades "looks alive" against visible flicker. `0` disables it.
+
+### Answer in the closing frame
+
+Answer text is withheld while the agent works. The closing frame carries the whole answer and overwrites every step line, so the bubble ends up holding the result and nothing else. Bodies over the 16 KB budget — kept under WeCom's 20 KB per-frame limit — hold the head in the bubble and deliver the remainder as follow-up messages.
+
+If the server already closed the stream (its 10 minute cap), the bridge reopens a fresh bubble for the same message and puts the answer there instead of falling back to a second chat message.
+
+### Groups: mentions and speakers
+
+Set `botName` to the bot's display name. A mention then only counts when it names that bot, and a parenthesized alias is ignored, so both `@瓦达西(Vaddasi)` and `@瓦达西` match. Without `botName`, any leading `@` counts, which is the pre-existing behaviour. Every leading `@name` is stripped from the prompt either way.
+
+Group prompts carry a speaker line so the agent knows who is asking:
+
+```
+[speaker: u-2]
+[quoted: the previous error log]
+这个怎么办
 ```
 
-How it works, and what it costs:
+WeCom never sends a display name, so `userLabels` maps ids to readable names; unmapped ids pass through. Direct messages get no speaker line.
 
-- The pi adapter listens for `message_update` / `text_delta` frames, accumulates them per run and emits at most one `assistant.delta` every 600 ms. Each frame carries the whole run text, never a patch, because WeCom overwrites `stream.content` per frame rather than appending.
-- The bubble is closed on `agent_settled`, not `agent_end`. Pi may still retry, compact, or accept steering after `agent_end`; `agent_settled` is the only authoritative "no more output" signal.
-- The bubble is a loading screen, not a build log. Each tool call draws an unrelated line from a fixed pool of programmer-flavored nonsense — "loosening the thread pool", "lost in a regular expression" — and keeps it for the whole call, so running/update/done events do not reshuffle the bubble. A frame whose body has not changed is skipped entirely: those frames would only repaint the same text. Tool names, command lines, arguments and results never reach the chat, and the line is deliberately not derived from what the agent is actually doing.
-- A long step keeps that line alive with a rotating dot every `stepHeartbeatMs` (15000 by default; `0` disables it). Every stream frame rewrites the whole body and the client repaints on each one, so the cadence trades "looks alive" against visible flicker.
-- When a step finishes, one short status note joins the bubble — "That step is done.", never the tool's own output. The next step clears it, so the bubble stays at two lines. `showStepResult: false` drops the note entirely; `stepResultDetail: "raw"` swaps it for a truncated excerpt of the tool result.
-- One run owns one bubble. A message that arrives while the agent is still working steers that run instead of opening a second bubble, so the first bubble is never left stranded on a stale status line.
-- Answer text is held back until the run settles. The closing frame carries the whole answer, which overwrites every step line in the bubble: what the user keeps is the result, nothing else. Long answers land in one piece instead of typing themselves out above a progress list.
-- `replyProgress` switches the rendering: `steps` is the default above, `log` restores the per-tool lines with names and labels. `streamAnswer: true` restores the older behavior of typing the answer into the bubble while the agent writes. `stepHeartbeatMs` sets the refresh cadence of a motionless bubble, `0` turns it off. `showStepResult` and `stepResultDetail` control the note shown after a finished step.
-- WeCom caps one streamed reply at 20480 bytes and 10 minutes; the closing frame keeps the head of a long answer in the bubble and delivers the remainder as follow-up messages, and a finish frame on an already-closed stream only logs a warning before retrying the answer as a plain message.
-- `MEDIA:` directives are stripped from streamed frames — a half-received marker would otherwise flash in the bubble — and the real attachments are sent after the run completes.
-- Clients without streaming support (WeChat personal accounts) ignore these frames entirely; the gateway drops them before they reach the adapter, so nothing changes for them.
+### Quoted messages
 
-## Rotating the WeCom welcome reply
+When a user quotes another message before asking, WeCom ships it as `body.quote`. Its text is flattened onto one line and prefixed as `[quoted: ...]` so the agent can answer about the cited message. Image, file and voice quotes are labelled (`[image]`, `[file]`, `[voice]`) rather than downloaded.
 
-WeCom sends an `enter_chat` event every time someone opens the bot conversation, so a single canned greeting gets repeated for the same user all day. The WeCom client now answers each event with a random line from a fixed pool (`WECOM_WELCOME_REPLIES` in `src/modules/client/wecom/adapter/wecom-client.ts`), which makes the bot read like a person rather than a template.
+### Pointing at the asker
 
-Editing the pool means editing that array and rebuilding — there is no config key. Keep the lines short: WeCom renders this as a plain text reply in the chat window.
+`mentionSender` prepends a mention to a group reply: `markdown` uses `<@userid>`, `text` uses a literal `@label`, `none` disables it.
 
-## Mentions, attachments and queueing
+Caveat: WeCom's `<@userid>` syntax is documented for bot text/markdown messages, and smart-robot **stream** frames do not resolve it — the string is shown verbatim. If you see raw `<@…>` in a reply, set `mentionSender` to `text` or `none`.
 
-Set `botName` to the bot's display name so that a group message only counts as a call when the user @-mentions that name. Without it, any leading `@` is treated as a mention, which is the pre-existing behavior. Every leading `@name` is stripped from the prompt either way.
+### Attachments
 
-In groups, the prompt is prefixed with a speaker line (`[speaker: <user id>]`) so the agent knows who is asking. WeCom never sends a display name, so `userLabels` maps ids to readable names; unmapped ids pass through as-is. Direct messages get no speaker line, since there is only one possible speaker.
+Images and files sent to the bot are downloaded into the OS temp directory (`<tmp>/agent-bridge-wecom-media`), capped at 20 MB per file, and referenced in the prompt by path. Files older than 7 days are pruned on connect and at most once an hour afterwards.
 
-Group replies point back at the asker: `mentionSender` defaults to `markdown`, which prepends `<@userid>` — the mention syntax WeCom renders as a real @ in markdown messages. Use `text` for a literal `@label`, or `none` to disable it. Direct messages never get a mention.
+### Welcome reply
 
-When a user quotes another message before asking, WeCom ships it as `body.quote`. Its text is flattened onto one line and prefixed as `[quoted: ...]` so the agent can answer about the cited message; image, file and voice quotes are labelled instead of downloaded.
+WeCom sends an `enter_chat` event every time someone opens the bot conversation. The client answers with a random line from a fixed pool (`WECOM_WELCOME_REPLIES` in `src/modules/client/wecom/adapter/wecom-client.ts`), which keeps the bot from repeating one canned greeting all day. Editing the pool means editing that array and rebuilding.
 
-Images and files sent to the bot are downloaded into the OS temp directory, capped at 20 MB per file, and referenced in the prompt by path. Files older than 7 days are pruned when the client connects and at most once an hour after that.
+### Bounded state
 
-Outbound events are queued per chat session and drained independently, so a slow attachment upload in one conversation does not delay a reply in another. Each queue holds at most 200 events; progress frames are the only thing that can pile up, and the oldest is dropped when the ceiling is hit.
+Reply and stream contexts are kept for the most recent 500 message ids, and processed message ids for the most recent 500 callbacks. Anything older is only needed by a retry that will never come.
 
-## Logs and rotation
+## Slash commands
 
-The process logs at `info` by default. Per-event chatter — every SDK frame, every inbound message, every tool event the core forwards — is logged at `debug` instead, so a busy channel does not write megabytes of noise. Set `LOG_LEVEL=debug` in the service environment when that trace is actually needed.
+Handled locally, without touching the agent:
 
-On the deployed host, `/etc/logrotate.d/agent-bridge` rotates `/root/.config/agent-bridge/*.log` weekly or once a file passes 20 MB, keeping four compressed rotations. `copytruncate` is required because systemd holds the log open in append mode and cannot be told to reopen it.
+| Command | Meaning |
+| ------- | ------- |
+| `/help` `/h` | Show the command list |
+| `/think` | Invalid or missing level: answer with usage only, no bubble, no session |
+| `/schedule-run <name>` | Fire a scheduled task once, delivering to its bound chat |
+| `/schedule-here <name>` | Bind this chat as that task's result destination |
+| `/queue-here <name>` | Bind this chat as a queue's result destination |
+
+Handled by the core, requires an existing session:
+
+| Command | Meaning |
+| ------- | ------- |
+| `/status` `/st` | Session id, model, thinking level, context usage |
+| `/model` `/m` | List models, or `/model provider/modelId` to switch |
+| `/think <level>` | Switch the thinking level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
+| `/compact` `/c` | Compact the session context |
+| `/stop` `/s` | Abort the current turn |
+
+Session lifecycle:
+
+| Command | Meaning |
+| ------- | ------- |
+| `/new [path]` `/n [path]` | Start a new session, optionally in a given directory |
+| `/resume <id>` `/r <id>` | Adopt an existing provider session |
+
+`/status`, `/model`, `/think <level>`, `/compact` and `/stop` need a session to exist; in a fresh chat they answer that switching is unavailable rather than starting an agent process.
+
+## Thinking level
+
+pi accepts `--thinking` (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) and the `provider/model:level` shorthand. Set the startup level through `agent.config.extraArgs`, and switch it on a live session with `/think`. Runtime switches do not survive a restart.
+
+## Logging
+
+The process logs at `info` by default. Per-event chatter — every SDK frame, every inbound message, every forwarded tool event — is logged at `debug`. Set `LOG_LEVEL=debug` in the service environment when that trace is needed.
+
+On a systemd host, rotate `/root/.config/agent-bridge/*.log` weekly or at 20 MB, keeping four compressed rotations. `copytruncate` is required because systemd holds the log open in append mode.
 
 ## Development
 
@@ -209,21 +248,16 @@ npm test
 npm run dev -- --help
 ```
 
-## Q&A
+`npm run build` bundles `src/` into `dist/agent-bridge.js` with tsup. The test suite runs on vitest.
 
-### Why not implement this directly as a `pi-feishu`, `pi-wechat`, or similar plugin?
+Layout:
 
-Because plugin-style integrations for Pi or similar local agents do not provide enough control over session lifecycle, channel behavior, and local runtime isolation.
-
-In practice, this shows up in a few ways:
-
-- It is hard to implement a real `/new` that cleanly resets the remote conversation while keeping channel-side routing predictable.
-- Connecting the same local agent cleanly to multiple channels is much harder when each integration is embedded as a plugin inside the agent runtime.
-- Different channels have very different behavior, and existing integrations are often maintained independently without a shared contract.
-- The local development and runtime experience becomes much more invasive: starting Pi for normal local work can also start multiple channel-facing plugins and inject extra tools that are unrelated to the task at hand.
-
-`agent-bridge` takes the opposite approach: keep the local agent runtime focused, keep channel integration outside the agent process, and make session routing explicit at the bridge layer.
+- `src/core/` — gateway core: session lifecycle, command routing, event fan-out
+- `src/modules/client/` — IM adapters (`wecom`, `weixin`, `feishu`) and shared progress rendering
+- `src/modules/agent/` — agent adapters (`pi-coding-agent`, `opencode`)
+- `src/modules/queue/`, `src/modules/schedule/` — queues and scheduled tasks
+- `src/i18n/` — zh-CN / en-US strings for progress lines and command replies
 
 ## License
 
-MIT.
+MIT
