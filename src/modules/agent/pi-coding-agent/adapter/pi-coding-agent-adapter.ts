@@ -8,6 +8,7 @@ import type {
   AgentSessionStateApi,
   NewAgentSessionStateApi,
   OutboundAttachment,
+  ThinkingLevel,
 } from "../../../../types";
 import { createLogger, type Logger } from "../../../../core/logger";
 import { extractMediaMarkers } from "../../media-convention";
@@ -391,6 +392,19 @@ export class PiCodingAgentAdapter implements AgentAdapter {
     }
 
     await this.#processEvent(event);
+  }
+
+  /**
+   * Applies a thinking level to the running pi process. pi validates the level
+   * against the current model's capabilities, so an unsupported level surfaces
+   * as a rejected RPC rather than a silent no-op.
+   */
+  async setThinkingLevel(level: ThinkingLevel): Promise<ThinkingLevel> {
+    if (!this.#client) {
+      throw new Error("PiCodingAgentAdapter is not started");
+    }
+    await this.#client.setThinkingLevel(level);
+    return level;
   }
 
   async getStatus(): Promise<AgentSessionStatus> {

@@ -15,6 +15,7 @@ export type PiRpcCommand =
   | { id?: string; type: "get_session_stats" }
   | { id?: string; type: "get_available_models" }
   | { id?: string; type: "set_model"; provider: string; modelId: string }
+  | { id?: string; type: "set_thinking_level"; level: string }
   | { id?: string; type: "set_session_name"; name: string };
 
 export type PiRpcResponse = {
@@ -319,6 +320,10 @@ export class PiRpcClient {
   async setModel(provider: string, modelId: string): Promise<{ provider?: string; id?: string }> {
     const response = await this.#send({ type: "set_model", provider, modelId });
     return (response.data as { provider?: string; id?: string } | undefined) ?? {};
+  }
+
+  async setThinkingLevel(level: string): Promise<void> {
+    await this.#send({ type: "set_thinking_level", level });
   }
 
   async setSessionName(name: string): Promise<void> {

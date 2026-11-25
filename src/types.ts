@@ -77,6 +77,11 @@ export type ClientOutputEvent =
       type: "command.session.model.set";
       clientSessionId: string;
       target: string;
+    }
+  | {
+      type: "command.session.thinking.set";
+      clientSessionId: string;
+      level: string;
     };
 
 export type AgentInputEvent =
@@ -94,6 +99,10 @@ export interface OutboundAttachment {
   fileName?: string;
   caption?: string;
 }
+
+/** Thinking budgets pi accepts for a model that supports reasoning. */
+export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
 export interface AgentSessionStatus {
   sessionId: string;
@@ -165,6 +174,10 @@ type AgentOutputPayload =
       modelId: string;
     }
   | {
+      type: "agent.thinking.updated";
+      level: string;
+    }
+  | {
       type: "error";
       kind: string;
       detail?: string;
@@ -229,6 +242,8 @@ export interface AgentAdapter {
   getStatus?(): Promise<AgentSessionStatus>;
   getAvailableModels?(): Promise<AgentAvailableModel[]>;
   setModel?(target: string): Promise<{ provider: string; modelId: string }>;
+  /** Applies a thinking level to the live session and echoes the level in force. */
+  setThinkingLevel?(level: ThinkingLevel): Promise<ThinkingLevel>;
   /**
    * Best-effort working directory of the session, used by the core to render
    * the `/resume` confirmation. Optional: when absent, undefined or throwing,

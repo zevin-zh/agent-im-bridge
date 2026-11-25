@@ -29,7 +29,7 @@ const resources = {
         speakerPrefix: "speaker",
         quotePrefix: "quoted",
         helpMessage:
-          "Available commands:\n\n- `/new [path]` (`/n [path]`) - Start a new agent session; optionally start it in a specific directory, e.g. `/new /path/to/project`. A directory given once is remembered and reused by later `/new` without a path\n- `/compact` (`/c`) - Compact the current session context\n- `/stop` (`/s`) - Stop the active agent run\n- `/status` (`/st`) - Show the current agent session status\n- `/model` (`/m`) - List available models, or switch with `/model provider/modelId`\n- `/resume <id>` (`/r <id>`) - Adopt an existing provider session into this chat; later messages continue that session (get the id from `/status`)\n- `/schedule-run <task-name>` - Run a scheduled task once now (the result is sent to the task's target chat)\n- `/schedule-here <task-name>` - Bind this chat as a task's result destination and set the task's owning channel (send this in the chat that should receive the results; an already-bound task must be unbound first)\n- `/queue-here <queue-name>` - Bind this chat as a queue's result destination (send this in the chat that should receive the results; an already-bound queue must be unbound by editing its file with AI)\n- `/help` (`/h`) - Show this help message",
+          "Available commands:\n\n- `/new [path]` (`/n [path]`) - Start a new agent session; optionally start it in a specific directory, e.g. `/new /path/to/project`. A directory given once is remembered and reused by later `/new` without a path\n- `/compact` (`/c`) - Compact the current session context\n- `/stop` (`/s`) - Stop the active agent run\n- `/status` (`/st`) - Show the current agent session status\n- `/model` (`/m`) - List available models, or switch with `/model provider/modelId`\n- `/think <level>` - Set the thinking level: off, minimal, low, medium, high, xhigh or max\n- `/resume <id>` (`/r <id>`) - Adopt an existing provider session into this chat; later messages continue that session (get the id from `/status`)\n- `/schedule-run <task-name>` - Run a scheduled task once now (the result is sent to the task's target chat)\n- `/schedule-here <task-name>` - Bind this chat as a task's result destination and set the task's owning channel (send this in the chat that should receive the results; an already-bound task must be unbound first)\n- `/queue-here <queue-name>` - Bind this chat as a queue's result destination (send this in the chat that should receive the results; an already-bound queue must be unbound by editing its file with AI)\n- `/help` (`/h`) - Show this help message",
         messageDeliveryFailedTitle: "[agent-bridge error] Message delivery failed",
         invalidNewWorkingDirectory:
           "Cannot start a new session: the working directory `{{workingDirectory}}` is invalid ({{detail}}).",
@@ -71,6 +71,11 @@ const resources = {
         modelListUnavailable: "Available models are unavailable for the current session.",
         modelSetUnavailable: "Current session model switching is unavailable.",
         modelInvalid: "The requested model is invalid or unavailable.",
+        thinkingUpdated: "Thinking level set to `{{level}}`.",
+        thinkingUsage:
+          "Usage: `/think <level>` where level is off, minimal, low, medium, high, xhigh or max.",
+        thinkingInvalid: "Unknown thinking level. Use off, minimal, low, medium, high, xhigh or max.",
+        thinkingUnavailable: "Thinking level switching is unavailable for the current session.",
         modelBusy: "Current session is busy, so the model cannot be switched. Please use `/stop` first.",
         modelUpdated: "Switched current model to `{{model}}`.",
         agentRunFailed: "The agent run failed.",
@@ -188,7 +193,7 @@ const resources = {
         speakerPrefix: "发言人",
         quotePrefix: "引用",
         helpMessage:
-          "可用命令：\n\n- `/new [path]` (`/n [path]`) - 开始一个新会话；可选指定工作目录，例如 `/new /path/to/project`。指定过的目录会被记住，之后不带路径的 `/new` 会继续使用它\n- `/compact` (`/c`) - 压缩当前会话上下文\n- `/stop` (`/s`) - 停止当前正在运行的任务\n- `/status` (`/st`) - 查看当前智能体会话状态\n- `/model` (`/m`) - 查看可用模型，或使用 `/model provider/modelId` 切换模型\n- `/resume <id>` (`/r <id>`) - 接管一个已有的 provider 会话，之后消息会在该会话中继续（ID 可通过 `/status` 查看）\n- `/schedule-run <任务名>` - 立即运行一次定时任务（结果会发送到该任务的目标聊天）\n- `/schedule-here <任务名>` - 把本会话设为该任务结果的发送目标并确定其归属 channel（请在希望接收结果的聊天里发送；已绑定的任务需先解绑）\n- `/queue-here <队列名>` - 把本会话设为队列结果的发送目标（请在希望接收结果的聊天里发送；已绑定的队列需编辑文件解绑）\n- `/help` (`/h`) - 查看这条帮助信息",
+          "可用命令：\n\n- `/new [path]` (`/n [path]`) - 开始一个新会话；可选指定工作目录，例如 `/new /path/to/project`。指定过的目录会被记住，之后不带路径的 `/new` 会继续使用它\n- `/compact` (`/c`) - 压缩当前会话上下文\n- `/stop` (`/s`) - 停止当前正在运行的任务\n- `/status` (`/st`) - 查看当前智能体会话状态\n- `/model` (`/m`) - 查看可用模型，或使用 `/model provider/modelId` 切换模型\n- `/think <级别>` - 设置思考强度：off、minimal、low、medium、high、xhigh、max\n- `/resume <id>` (`/r <id>`) - 接管一个已有的 provider 会话，之后消息会在该会话中继续（ID 可通过 `/status` 查看）\n- `/schedule-run <任务名>` - 立即运行一次定时任务（结果会发送到该任务的目标聊天）\n- `/schedule-here <任务名>` - 把本会话设为该任务结果的发送目标并确定其归属 channel（请在希望接收结果的聊天里发送；已绑定的任务需先解绑）\n- `/queue-here <队列名>` - 把本会话设为队列结果的发送目标（请在希望接收结果的聊天里发送；已绑定的队列需编辑文件解绑）\n- `/help` (`/h`) - 查看这条帮助信息",
         messageDeliveryFailedTitle: "[agent-bridge 错误] 消息发送失败",
         invalidNewWorkingDirectory:
           "无法开始新会话：工作目录 `{{workingDirectory}}` 无效（{{detail}}）。",
@@ -228,6 +233,10 @@ const resources = {
         modelListUnavailable: "当前会话暂时无法获取可用模型列表。",
         modelSetUnavailable: "当前会话暂时无法切换模型。",
         modelInvalid: "请求的模型无效或当前不可用。",
+        thinkingUpdated: "思考强度已设为 `{{level}}`。",
+        thinkingUsage: "用法：`/think <级别>`，级别可选 off、minimal、low、medium、high、xhigh、max。",
+        thinkingInvalid: "未知的思考强度，可选 off、minimal、low、medium、high、xhigh、max。",
+        thinkingUnavailable: "当前会话暂时无法切换思考强度。",
         modelBusy: "当前正在运行，无法切换模型。请先使用 `/stop`。",
         modelUpdated: "当前模型已切换至 `{{model}}`。",
         agentRunFailed: "智能体任务执行失败。",

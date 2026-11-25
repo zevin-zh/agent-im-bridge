@@ -173,6 +173,25 @@ describe("parseSlashCommand", () => {
     });
   });
 
+  it("parses /think <level> into a command.session.thinking.set event", () => {
+    expect(parseSlashCommand("/think high", "session-1")).toEqual({
+      type: "command.session.thinking.set",
+      clientSessionId: "session-1",
+      level: "high",
+    });
+    expect(parseSlashCommand("/THINK  medium ", "session-1")).toEqual({
+      type: "command.session.thinking.set",
+      clientSessionId: "session-1",
+      level: "medium",
+    });
+    // No level means "show usage", decided by the core.
+    expect(parseSlashCommand("/think", "session-1")).toEqual({
+      type: "command.session.thinking.set",
+      clientSessionId: "session-1",
+      level: "",
+    });
+  });
+
   it("parses /model <target> and /m <target> into a command.session.model.set event", () => {
     expect(parseSlashCommand("/model anthropic/claude-sonnet-4-5", "session-1")).toEqual({
       type: "command.session.model.set",

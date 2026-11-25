@@ -10,7 +10,9 @@ import type {
   GatewayCoreOptions,
   IngressResult,
   MessageTimestampConfig,
+  ThinkingLevel,
 } from "../types";
+import { THINKING_LEVELS } from "../types";
 import { createAgentSessionStateRegistry } from "../config/agent-session-state";
 import { createInMemoryChannelStateStore } from "../config/channel-state";
 import { SYNTHETIC_SESSION_PREFIX } from "../modules/schedule/scheduler";
@@ -288,6 +290,10 @@ export class GatewayCore {
       await this.#handleSessionModelSet(event.clientSessionId, event.target);
       return { ok: true };
     }
+    if (event.type === "command.session.thinking.set") {
+      await this.#handleSessionThinkingSet(event.clientSessionId, event.level);
+      return { ok: true };
+    }
 
     // The former core-routed queue-bind command handling is gone (spec D4,
     // T05): the IM adapters parse that command locally and never reach the
@@ -517,6 +523,60 @@ export class GatewayCore {
         clientSessionId,
         kind,
         ...(detail ? { detail } : {}),
+      });
+    }
+  }
+
+  /**
+   * Applies a thinking level to the live session. Validated here rather than in
+   * the adapter so every client gets the same error wording, and so a typo never
+   * reaches the agent process.
+   */
+  async #handleSessionThinkingSet(clientSessionId: string, level: string): Promise<void> {
+    const normalized = level.trim().toLowerCase();
+    if (normalized.length === 0) {
+      await this.#deliverClientInput({
+        type: "error",
+        clientSessionId,
+        kind: "agent.thinking.usage",
+      });
+      return;
+    }
+    if (!(THINKING_LEVELS as readonly string[]).includes(normalized)) {
+      await this.#deliverClientInput({
+        type: "error",
+        clientSessionId,
+        kind: "agent.thinking.invalid",
+        detail: normalized,
+      });
+      return;
+    }
+
+    const runtime = await this.#getActiveRuntime(clientSessionId);
+    if (!runtime || !runtime.agentAdapter.setThinkingLevel) {
+      await this.#deliverClientInput({
+        type: "error",
+        clientSessionId,
+        kind: "agent.thinking.unavailable",
+      });
+      return;
+    }
+
+    this.#touchRuntime(runtime);
+    try {
+      const applied = await runtime.agentAdapter.setThinkingLevel(normalized as ThinkingLevel);
+      await this.#deliverClientInput({
+        type: "agent.thinking.updated",
+        clientSessionId,
+        level: applied,
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      await this.#deliverClientInput({
+        type: "error",
+        clientSessionId,
+        kind: "agent.thinking.unavailable",
+        detail,
       });
     }
   }

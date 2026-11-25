@@ -1950,11 +1950,14 @@ describe("WecomIMAdapter", () => {
 
     const delivered: string[] = [];
     let releaseA: (() => void) | undefined;
+    // The gate exists before any frame arrives, so the test can always release
+    // chat A regardless of scheduling order.
+    const aGate = new Promise<void>((resolve) => {
+      releaseA = resolve;
+    });
     fakeClientState.sendStreamText.mockImplementation(async (chatId: string) => {
       if (chatId === "user_a") {
-        await new Promise<void>((resolve) => {
-          releaseA = resolve;
-        });
+        await aGate;
         delivered.push("a");
         return;
       }

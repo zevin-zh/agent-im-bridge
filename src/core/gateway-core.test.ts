@@ -84,6 +84,8 @@ class FakeAgentAdapter implements AgentAdapter {
   setModelResult?: { provider: string; modelId: string };
   setModelError?: Error;
   setModelCalls: string[] = [];
+  setThinkingLevelError?: Error;
+  setThinkingLevelCalls: string[] = [];
   startError?: Error;
   stopError?: Error;
   workingDirectoryResult?: string;
@@ -148,6 +150,14 @@ class FakeAgentAdapter implements AgentAdapter {
       throw new Error("setModel not configured");
     }
     return this.setModelResult;
+  }
+
+  async setThinkingLevel(level: import("../types").ThinkingLevel): Promise<import("../types").ThinkingLevel> {
+    this.setThinkingLevelCalls.push(level);
+    if (this.setThinkingLevelError) {
+      throw this.setThinkingLevelError;
+    }
+    return level;
   }
 
   async getWorkingDirectory(): Promise<string | undefined> {
@@ -2706,6 +2716,100 @@ describe("GatewayCore", () => {
         modelId: "claude-sonnet-4-5",
       });
     });
+  });
+
+  it("applies a thinking level to the live session", async () => {
+    const imAdapter = new FakeIMAdapter();
+    const createdAdapters: FakeAgentAdapter[] = [];
+
+    const agentModule = makeFakeModule({
+      create: async (args) => {
+        const adapter = new FakeAgentAdapter(args.agentSessionId);
+        createdAdapters.push(adapter);
+        return adapter;
+      },
+    });
+
+    const core = new GatewayCore({
+      imAdapter,
+      agentModule,
+      agentConfig: {},
+      agentIdleTimeoutMs: 60_000,
+    });
+    running.push(core);
+    await core.start();
+
+    await imAdapter.emit({
+      type: "user.message",
+      clientSessionId: "client-1",
+      text: "hello",
+    });
+
+    await waitFor(() => {
+      expect(createdAdapters).toHaveLength(1);
+    });
+
+    await imAdapter.emit({
+      type: "command.session.thinking.set",
+      clientSessionId: "client-1",
+      level: "HIGH",
+    });
+
+    await waitFor(() => {
+      expect(createdAdapters[0]?.setThinkingLevelCalls).toEqual(["high"]);
+      expect(imAdapter.outputs.at(-1)).toEqual({
+        type: "agent.thinking.updated",
+        clientSessionId: "client-1",
+        level: "high",
+      });
+    });
+  });
+
+  it("rejects an unknown thinking level before it reaches the adapter", async () => {
+    const imAdapter = new FakeIMAdapter();
+    const createdAdapters: FakeAgentAdapter[] = [];
+
+    const agentModule = makeFakeModule({
+      create: async (args) => {
+        const adapter = new FakeAgentAdapter(args.agentSessionId);
+        createdAdapters.push(adapter);
+        return adapter;
+      },
+    });
+
+    const core = new GatewayCore({
+      imAdapter,
+      agentModule,
+      agentConfig: {},
+      agentIdleTimeoutMs: 60_000,
+    });
+    running.push(core);
+    await core.start();
+
+    await imAdapter.emit({
+      type: "user.message",
+      clientSessionId: "client-1",
+      text: "hello",
+    });
+    await waitFor(() => {
+      expect(createdAdapters).toHaveLength(1);
+    });
+
+    await imAdapter.emit({
+      type: "command.session.thinking.set",
+      clientSessionId: "client-1",
+      level: "turbo",
+    });
+
+    await waitFor(() => {
+      expect(imAdapter.outputs.at(-1)).toMatchObject({
+        type: "error",
+        clientSessionId: "client-1",
+        kind: "agent.thinking.invalid",
+        detail: "turbo",
+      });
+    });
+    expect(createdAdapters[0]?.setThinkingLevelCalls).toEqual([]);
   });
 
   it("emits an invalid-model error with detail when switching model fails validation", async () => {

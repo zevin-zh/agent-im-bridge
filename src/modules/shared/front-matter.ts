@@ -183,7 +183,21 @@ export async function writeFileAtomic(filePath: string, content: string): Promis
   );
   try {
     await writeFile(tempPath, content, "utf8");
-    await rename(tempPath, filePath);
+    // Windows refuses to rename over a file another handle currently has open
+    // (EPERM/EBUSY), which a concurrent reader can trigger at any moment. POSIX
+    // replaces atomically and never needs this.
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await rename(tempPath, filePath);
+        return;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException)?.code;
+        if (attempt >= 4 || (code !== "EPERM" && code !== "EBUSY" && code !== "EACCES")) {
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5 * (attempt + 1)));
+      }
+    }
   } catch (error) {
     await unlink(tempPath).catch(() => undefined);
     throw error;

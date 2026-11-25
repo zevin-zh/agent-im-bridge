@@ -47,6 +47,18 @@ function parseModelCommand(text: string, clientSessionId: string): ParsedSlashCo
   };
 }
 
+function parseThinkingCommand(text: string, clientSessionId: string): ParsedSlashCommand | null {
+  const match = text.match(/^\/think(?:\s+(.*))?$/i);
+  if (!match) {
+    return null;
+  }
+  return {
+    type: "command.session.thinking.set",
+    clientSessionId,
+    level: match[1]?.trim() ?? "",
+  };
+}
+
 function parseNewCommand(text: string, clientSessionId: string): ParsedSlashCommand | null {
   const match = text.match(/^\/(new|n)(?:\s+(.*))?$/i);
   if (!match) {
@@ -307,6 +319,10 @@ export function parseSlashCommand(
   const modelCommand = parseModelCommand(text, clientSessionId);
   if (modelCommand) {
     return modelCommand;
+  }
+  const thinkingCommand = parseThinkingCommand(text, clientSessionId);
+  if (thinkingCommand) {
+    return thinkingCommand;
   }
 
   switch (text.toLowerCase()) {

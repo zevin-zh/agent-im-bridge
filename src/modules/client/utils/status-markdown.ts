@@ -52,6 +52,10 @@ export function renderStatusMarkdown(event: ClientInputEvent, t: Translator): st
     return t("client.modelUpdated", { model: `${event.provider}/${event.modelId}` });
   }
 
+  if (event.type === "agent.thinking.updated") {
+    return t("client.thinkingUpdated", { level: event.level });
+  }
+
   if (event.type === "agent.status.info") {
     return [
       `**${t("client.statusTitle")}**`,
@@ -76,6 +80,12 @@ export function renderStatusMarkdown(event: ClientInputEvent, t: Translator): st
         return formatErrorMarkdown(t("client.modelInvalid"), event.detail);
       case "agent.model.busy":
         return event.detail ?? t("client.modelBusy");
+      case "agent.thinking.usage":
+        return formatErrorMarkdown(t("client.thinkingUsage"), event.detail);
+      case "agent.thinking.invalid":
+        return formatErrorMarkdown(t("client.thinkingInvalid"), event.detail);
+      case "agent.thinking.unavailable":
+        return formatErrorMarkdown(t("client.thinkingUnavailable"), event.detail);
       case "agent.run.failed":
         return formatErrorMarkdown(t("client.agentRunFailed"), event.detail);
       default:
