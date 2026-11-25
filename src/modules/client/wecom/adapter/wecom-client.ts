@@ -596,6 +596,12 @@ export class WecomClient {
 
     const refs = this.#extractMediaRefs(body);
     for (const ref of refs) {
+      if (this.#isImageRef(ref) && this.#config.imageInput !== "path") {
+        // Text-only models reject image bytes outright, so the agent only learns
+        // that a picture was sent. Set `imageInput: "path"` for vision models.
+        textParts.push("[image]");
+        continue;
+      }
       const localPath = await this.#downloadMediaRef(ref);
       if (localPath) {
         textParts.push(`[Received ${ref.kind}: ${localPath}]`);
@@ -721,6 +727,14 @@ export class WecomClient {
       return undefined;
     }
     return text.length > MAX_QUOTE_CHARS ? `${text.slice(0, MAX_QUOTE_CHARS)}…` : text;
+  }
+
+  /** True for images, including files whose name marks them as a picture. */
+  #isImageRef(ref: MediaRef): boolean {
+    if (ref.kind === "image") {
+      return true;
+    }
+    return ref.fileName !== undefined && /\.(png|jpe?g|webp|gif|bmp)$/i.test(ref.fileName);
   }
 
   #extractMediaRefs(body: Record<string, any>): MediaRef[] {

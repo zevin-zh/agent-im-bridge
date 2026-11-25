@@ -136,6 +136,7 @@ agent-bridge ls           # 列出已配置的通道
 | `requireMentionInGroup`  | boolean                          | `true`                            | 群聊里只响应 @ 机器人的消息                                              |
 | `botName`                | string                           | -                                 | 用来校验群聊 @ 的机器人显示名，不配则任意前导 @ 都算                     |
 | `userLabels`             | `Record<string, string>`         | -                                 | 把企业微信 user id 映射成可读名字，用于发言人标识                        |
+| `imageInput`             | `"none" \| "path"`               | `"none"`                          | 入站图片是否交给 agent；默认只标注，纯文本模型收到图片会直接 400         |
 | `mentionSender`          | `"none" \| "text" \| "markdown"` | `"none"`                          | 群聊回复如何指向提问人；`markdown` 在智能机器人流式帧上无效，见下文       |
 | `replyProgress`          | `"steps" \| "log"`               | `"steps"`                         | 进度样式：单行随机文案，或逐个工具调用日志                               |
 | `streamAnswer`           | boolean                          | `false`                           | `true` 让答案边生成边写入气泡，`false` 只在收尾帧一次性落地               |
@@ -215,7 +216,7 @@ agent 工作期间答案不会流出。收尾帧携带完整答案并覆盖所�
 
 ### 附件
 
-发给机器人的图片和文件会下载到系统临时目录 `<tmp>/agent-bridge-wecom-media`，单个文件上限 20MB，prompt 里以路径引用。图文混排消息里的图片和文件也会一并下载，不会只留下文字。
+发给机器人的文件会下载到系统临时目录 `<tmp>/agent-bridge-wecom-media`，单个文件上限 20MB，prompt 里以路径引用。图片默认不下载，只在 prompt 里注入一个 `[image]` 占位：纯文本模型收到图片字节会直接返回 400 `not a multimodal model`。确认模型支持图片输入后，把 `imageInput` 设为 `path` 才会下载并给出路径。图文混排消息里的文件同样会下载。
 
 企业微信里「先发文件再补一句话」是两条独立消息，不是一条混排。只有附件、没有文字的消息会先等 3 秒，把随后那句话合并成一条 prompt 再触发，避免为一串路径白跑一轮；窗口内没有文字就单独发出。超过 7 天的文件会在连接时清理一次，之后最多每小时检查一次。
 

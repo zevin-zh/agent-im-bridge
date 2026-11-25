@@ -530,6 +530,16 @@ export interface WecomClientConfig {
    */
   userLabels?: Record<string, string>;
   /**
+   * Whether inbound images are handed to the agent as files.
+   *
+   * - `none` (default): only an `[image]` placeholder is injected. The agent
+   *   cannot open the picture, which is the correct behaviour for text-only
+   *   models — sending image bytes to one fails with "not a multimodal model".
+   * - `path`: download the image and put its local path in the prompt. Only
+   *   turn this on when the configured model accepts image input.
+   */
+  imageInput?: "none" | "path";
+  /**
    * How a group reply points back at whoever asked.
    *
    * - `none` (default): no mention at all.

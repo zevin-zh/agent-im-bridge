@@ -296,6 +296,7 @@ describe("WecomClient", () => {
       {
         botId: "bot-id",
         secret: "secret",
+        imageInput: "path",
       },
       createLogger("test"),
     );
@@ -740,6 +741,7 @@ describe("WecomClient", () => {
         botId: "bot-id",
         secret: "secret",
         requireMentionInGroup: true,
+        imageInput: "path",
       },
       createLogger("test"),
     );
@@ -781,5 +783,43 @@ describe("WecomClient", () => {
     expect(existsSync(match![1]!)).toBe(true);
     rmSync(match![1]!, { force: true });
     expect(sdkClient.downloadFile).toHaveBeenCalledWith("https://example.com/shot.png", "k1");
+  });
+
+  it("refuses to hand images to a text-only model by default", async () => {
+    const client = new WecomClient(
+      {
+        botId: "bot-id",
+        secret: "secret",
+      },
+      createLogger("test"),
+    );
+    const onMessage = vi.fn(async () => {});
+    client.setOnMessage(onMessage);
+    const connecting = client.connect();
+    latestClient().emit("authenticated");
+    await connecting;
+    const sdkClient = latestClient();
+
+    sdkClient.emit("message.image", {
+      headers: { req_id: "req-image-default" },
+      body: {
+        msgid: "msg-image-default",
+        chatid: "user_1",
+        chattype: "single",
+        from: { userid: "user_1" },
+        msgtype: "image",
+        text: { content: "看下这张图" },
+        image: { url: "https://example.com/a.png", aeskey: "k" },
+      },
+    } satisfies MockFrame);
+
+    await waitFor(() => onMessage.mock.calls.length === 1);
+    const message = onMessage.mock.calls[0]?.[0] as { text: string };
+    // The placeholder tells the agent a picture exists without feeding bytes to
+    // a model that would answer 400 "not a multimodal model".
+    expect(message.text).toContain("[image]");
+    expect(message.text).toContain("看下这张图");
+    expect(message.text).not.toContain("[Received image:");
+    expect(sdkClient.downloadFile).not.toHaveBeenCalled();
   });
 });
