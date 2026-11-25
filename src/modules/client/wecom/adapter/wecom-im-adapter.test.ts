@@ -1425,11 +1425,15 @@ describe("WecomIMAdapter", () => {
   });
 
   it("replaces every step line with the answer and hides half-received MEDIA markers", async () => {
+    // Opening line and step line draw different variants, so the step frame is
+    // guaranteed to differ from the announcement and must be sent.
+    let picks = 0;
     const adapter = new WecomIMAdapter(
       {
         botId: "bot-id",
         secret: "secret",
         requireMentionInGroup: true,
+        stepRandom: () => (picks++ === 0 ? 0 : 0.99),
       },
       createLogger("test"),
     );

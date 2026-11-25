@@ -539,6 +539,8 @@ export interface WecomClientConfig {
    *   turn this on when the configured model accepts image input.
    */
   imageInput?: "none" | "path";
+  /** Test hook: deterministic source for the random step lines. */
+  stepRandom?: () => number;
   /**
    * How a group reply points back at whoever asked.
    *

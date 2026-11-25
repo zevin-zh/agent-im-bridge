@@ -704,7 +704,7 @@ export class WecomIMAdapter implements IMAdapter {
       return;
     }
 
-    state.stepResult = pickStepVariant(this.#t("progress.steps.steered"));
+    state.stepResult = pickStepVariant(this.#t("progress.steps.steered"), this.#config.stepRandom);
     const body = this.#buildStreamBody(state);
     if (body === state.lastBody) {
       return;
@@ -724,7 +724,7 @@ export class WecomIMAdapter implements IMAdapter {
       return;
     }
 
-    const opening = pickStepVariant(this.#t("progress.steps.pool"));
+    const opening = pickStepVariant(this.#t("progress.steps.pool"), this.#config.stepRandom);
     await this.#client.sendStreamText(chatId, opening, {
       replyToMessageId: messageId,
       finish: false,
@@ -806,7 +806,7 @@ export class WecomIMAdapter implements IMAdapter {
     const body =
       finalText.length > 0
         ? `${mention}${finalText}`
-        : pickStepVariant(this.#t("progress.steps.done"));
+        : pickStepVariant(this.#t("progress.steps.done"), this.#config.stepRandom);
     const { head, rest } = splitFinalBody(body);
     try {
       await this.#client.sendStreamText(chatId, head, { replyToMessageId, finish: true });
@@ -888,7 +888,7 @@ export class WecomIMAdapter implements IMAdapter {
       const raw = summarizeToolResult(event.result);
       return raw ? `${this.#t("progress.steps.resultPrefix")}${raw}` : undefined;
     }
-    return pickStepVariant(this.#t("progress.steps.stepDone"));
+    return pickStepVariant(this.#t("progress.steps.stepDone"), this.#config.stepRandom);
   }
 
   /**
@@ -916,7 +916,7 @@ export class WecomIMAdapter implements IMAdapter {
     }
 
     if (sections.length === 0) {
-      return state.announceText ?? pickStepVariant(this.#t("progress.steps.pool"));
+      return state.announceText ?? pickStepVariant(this.#t("progress.steps.pool"), this.#config.stepRandom);
     }
     return clampStreamBody(sections.join("\n\n"));
   }
@@ -946,7 +946,7 @@ export class WecomIMAdapter implements IMAdapter {
 
   #createProgressState(): ProgressState {
     return {
-      renderer: new ProgressRenderer({ t: this.#t, mode: this.#progressMode }),
+      renderer: new ProgressRenderer({ t: this.#t, mode: this.#progressMode, random: this.#config.stepRandom }),
       announced: false,
       streaming: false,
       answerText: "",
@@ -1021,7 +1021,7 @@ export class WecomIMAdapter implements IMAdapter {
 
     const progress = state.renderer.getCurrentProgress();
     const subject = progress.isEmpty
-      ? (state.announceText ?? pickStepVariant(this.#t("progress.steps.pool")))
+      ? (state.announceText ?? pickStepVariant(this.#t("progress.steps.pool"), this.#config.stepRandom))
       : progress.markdown;
     const base = state.stepResult ? `${subject}\n\n${state.stepResult}` : subject;
     const dots = (state.heartbeatTick % 3) + 1;
