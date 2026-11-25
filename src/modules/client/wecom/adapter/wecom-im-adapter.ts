@@ -9,6 +9,7 @@ import type {
   OnScheduleRun,
   WecomClientConfig,
 } from "../../../../types";
+import { THINKING_LEVELS } from "../../../../types";
 import { formatSendFailureNotice, getTranslatorForCommon, type Translator } from "../../../../i18n";
 import { createLogger, type Logger } from "../../../../core/logger";
 import { isCompletedCommandResponse, isTerminalAgentError } from "../../utils/error-events";
@@ -375,6 +376,15 @@ export class WecomIMAdapter implements IMAdapter {
       const helpMarkdown = resolveHelpMarkdown(normalizedText, this.#t);
       if (helpMarkdown) {
         await this.#client?.sendText(chatId, helpMarkdown, messageId);
+        return;
+      }
+
+      // A malformed `/think` is answered here, before the bubble opens and
+      // before anything reaches the core: there is no session to touch and no
+      // reason to show a progress bubble for a usage hint.
+      const thinkingUsage = this.#resolveThinkingUsage(normalizedText);
+      if (thinkingUsage !== null) {
+        await this.#client?.sendText(chatId, thinkingUsage, messageId);
         return;
       }
 
@@ -1053,6 +1063,22 @@ export class WecomIMAdapter implements IMAdapter {
       return `@${label} `;
     }
     return `<@${state.senderId}> `;
+  }
+
+  /**
+   * Answers a malformed `/think` locally: no level, or a level pi would reject.
+   * Returns null when the command is well formed and should go to the core.
+   */
+  #resolveThinkingUsage(text: string): string | null {
+    const match = text.match(/^\/think(?:\s+(.*))?$/i);
+    if (!match) {
+      return null;
+    }
+    const level = (match[1] ?? "").trim().toLowerCase();
+    if (level.length === 0 || !(THINKING_LEVELS as readonly string[]).includes(level)) {
+      return this.#t("client.thinkingUsage");
+    }
+    return null;
   }
 
   #resetProgressState(clientSessionId: string): void {

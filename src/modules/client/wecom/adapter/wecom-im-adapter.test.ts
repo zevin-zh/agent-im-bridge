@@ -2226,4 +2226,77 @@ describe("WecomIMAdapter", () => {
       text: "[speaker: u-2]\n[quoted: 上一版报错： / TypeError: boom]\n这个怎么办",
     });
   });
+
+  it("answers a malformed /think locally without opening a bubble", async () => {
+    const adapter = new WecomIMAdapter(
+      {
+        botId: "bot-id",
+        secret: "secret",
+        requireMentionInGroup: true,
+      },
+      createLogger("test"),
+    );
+    const onOutput = vi.fn(async (_event: ClientOutputEvent) => {});
+
+    await adapter.start(onOutput);
+    await fakeClientState.onMessage?.({
+      chatId: "user_1",
+      chatType: "dm",
+      messageId: "msg-think-usage",
+      text: "/think",
+      mentionedBot: false,
+    });
+
+    // No session is created, no bubble is opened: just the usage line.
+    expect(onOutput).not.toHaveBeenCalled();
+    expect(fakeClientState.sendStreamText).not.toHaveBeenCalled();
+    expect(fakeClientState.sendText).toHaveBeenCalledWith(
+      "user_1",
+      expect.stringContaining("/think <level>"),
+      "msg-think-usage",
+    );
+
+    fakeClientState.sendText.mockClear();
+    await fakeClientState.onMessage?.({
+      chatId: "user_1",
+      chatType: "dm",
+      messageId: "msg-think-bad",
+      text: "/think turbo",
+      mentionedBot: false,
+    });
+    expect(onOutput).not.toHaveBeenCalled();
+    expect(fakeClientState.sendStreamText).not.toHaveBeenCalled();
+    expect(fakeClientState.sendText).toHaveBeenCalledWith(
+      "user_1",
+      expect.stringContaining("/think <level>"),
+      "msg-think-bad",
+    );
+  });
+
+  it("forwards a well-formed /think to the core", async () => {
+    const adapter = new WecomIMAdapter(
+      {
+        botId: "bot-id",
+        secret: "secret",
+        requireMentionInGroup: true,
+      },
+      createLogger("test"),
+    );
+    const onOutput = vi.fn(async (_event: ClientOutputEvent) => {});
+
+    await adapter.start(onOutput);
+    await fakeClientState.onMessage?.({
+      chatId: "user_1",
+      chatType: "dm",
+      messageId: "msg-think-set",
+      text: "/think high",
+      mentionedBot: false,
+    });
+
+    expect(onOutput).toHaveBeenCalledWith({
+      type: "command.session.thinking.set",
+      clientSessionId: "wecom:dm:user_1",
+      level: "high",
+    });
+  });
 });
