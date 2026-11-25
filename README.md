@@ -4,48 +4,48 @@
 [![Node.js](https://img.shields.io/badge/node-%3E%3D22-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f?style=flat-square)](#license)
 
-`agent-bridge` connects an IM channel (WeCom, Weixin, Feishu) to a local coding agent (pi, OpenCode) through a dual-adapter architecture: one adapter speaks to the chat platform, one drives the agent process, and the core only forwards messages between them. No harness layer, no extra tools, no extra skills.
+`agent-bridge` 用双适配器架构把 IM 通道和企业微信、微信、飞书接到本地编码 agent 和 pi、OpenCode 之间。一个适配器对接聊天平台，一个驱动 agent 进程，中间的核心只负责转发消息。没有 harness 层，没有额外工具，没有额外技能。
 
-This fork keeps that architecture and adds a deeper WeCom experience: a single in-place reply bubble, group speaker awareness, quoted-message context, attachment housekeeping and runtime thinking-level control.
+这个 fork 保留原有架构，并在 WeCom 上做得更深：单条气泡原地刷新、群聊发言人识别、引用消息上下文、附件清理、运行时调整思考强度。
 
-## Supported platforms
+## 支持的平台
 
-Client side:
+客户端：
 
-| Platform      | Image/file in | Image/file out | Emoji | In-place progress |
-| ------------- | ------------- | -------------- | ----- | ----------------- |
-| Feishu / Lark | yes           | yes            | yes   | yes               |
-| WeCom         | yes           | yes            | -     | yes               |
-| Weixin        | yes           | yes            | -     | -                 |
+| 平台          | 图片/文件接收 | 图片/文件发送 | Emoji | 原地进度 |
+| ------------- | ------------- | ------------- | ----- | -------- |
+| 飞书 / Lark   | 支持          | 支持          | 支持  | 支持     |
+| 企业微信      | 支持          | 支持          | -     | 支持     |
+| 微信          | 支持          | 支持          | -     | -        |
 
-Agent side:
+Agent：
 
-| Agent           | New session | Stop | Compact | Model switch | Thinking level |
-| --------------- | ----------- | ---- | ------- | ------------ | -------------- |
-| PI Coding Agent | yes         | yes  | yes     | yes          | yes            |
-| OpenCode        | yes         | yes  | yes     | yes          | -              |
+| Agent           | 新会话 | 停止 | 压缩 | 切换模型 | 思考强度 |
+| --------------- | ------ | ---- | ---- | -------- | -------- |
+| PI Coding Agent | 支持   | 支持 | 支持 | 支持     | 支持     |
+| OpenCode        | 支持   | 支持 | 支持 | 支持     | -        |
 
-## Quick start
+## 快速开始
 
 ```bash
 npm install -g @hopgoldy/agent-bridge
-agent-bridge add          # interactive channel setup
-agent-bridge start wecom  # start the channel you just created
-agent-bridge ls           # list configured channels
+agent-bridge add          # 交互式创建通道
+agent-bridge start wecom  # 启动刚创建的通道
+agent-bridge ls           # 列出已配置的通道
 ```
 
-`agent-bridge add` asks for a channel name, a client type and its config, then an agent type and its config. Everything lands in `~/.config/agent-bridge/config.json`.
+`agent-bridge add` 会依次询问通道名、客户端类型及其配置、agent 类型及其配置，结果写入 `~/.config/agent-bridge/config.json`。
 
-## CLI
+## 命令行
 
-Channels:
+通道：
 
 - `agent-bridge add`
 - `agent-bridge ls`
 - `agent-bridge remove <channel-name>`
 - `agent-bridge start <channel-name>`
 
-Scheduled tasks:
+定时任务：
 
 - `agent-bridge schedule add`
 - `agent-bridge schedule list`
@@ -53,7 +53,7 @@ Scheduled tasks:
 - `agent-bridge schedule enable <task-name>` / `disable <task-name>` / `remove <task-name>`
 - `agent-bridge schedule history [task-name]`
 
-Queues:
+队列：
 
 - `agent-bridge queue add`
 - `agent-bridge queue insert <queue-name> --prompt "..." [--directory <path>] [--model <model>] [--timeout 10m] [--silence 30m]`
@@ -62,7 +62,7 @@ Queues:
 - `agent-bridge queue history <queue-name>`
 - `agent-bridge queue retry <queue-name> <task-id>`
 
-## Configuration
+## 配置
 
 ```json
 {
@@ -96,150 +96,150 @@ Queues:
 }
 ```
 
-### Channel common
+### 通道公共配置
 
-| Key           | Type                | Meaning                                       |
-| ------------- | ------------------- | --------------------------------------------- |
-| `channelName` | string              | Auto-filled from the map key                  |
-| `language`    | `"zh-CN" \| "en-US"` | Language of progress lines and command replies |
+| 字段          | 类型                 | 说明                           |
+| ------------- | -------------------- | ------------------------------ |
+| `channelName` | string               | 由配置的键名自动填入           |
+| `language`    | `"zh-CN" \| "en-US"` | 进度文案和命令回复所使用的语言 |
 
-### WeCom client config
+### WeCom 客户端配置
 
-| Key                    | Type                              | Default                              | Meaning                                                                                   |
-| ---------------------- | --------------------------------- | ------------------------------------ | ----------------------------------------------------------------------------------------- |
-| `botId`                | string                            | -                                    | Smart-robot id                                                                            |
-| `secret`               | string                            | -                                    | Smart-robot secret                                                                        |
-| `websocketUrl`         | string                            | `wss://openws.work.weixin.qq.com`    | Custom endpoint                                                                            |
-| `requireMentionInGroup`| boolean                           | `true`                               | Only answer group messages that @ the bot                                                 |
-| `botName`              | string                            | -                                    | Bot display name used to verify group mentions; unset means any leading `@` counts         |
-| `userLabels`           | `Record<string, string>`          | -                                    | Maps WeCom user ids to readable names for the speaker line                                |
-| `mentionSender`        | `"markdown" \| "text" \| "none"`  | `"markdown"`                         | How a group reply points at the asker; see the caveat below                                |
-| `replyProgress`        | `"steps" \| "log"`                | `"steps"`                            | Progress style: one randomized step line, or the per-tool log                              |
-| `streamAnswer`         | boolean                           | `false`                              | `true` streams answer text into the bubble; `false` lands it in one closing frame           |
-| `showStepResult`       | boolean                           | `true`                               | Show a short note after each completed step                                                |
-| `stepResultDetail`     | `"status" \| "raw"`               | `"status"`                           | `status` shows a phrase, `raw` shows a truncated excerpt of the tool result                |
-| `stepHeartbeatMs`      | number                            | `15000`                              | Refresh cadence of a motionless bubble; `0` disables the heartbeat                         |
+| 字段                     | 类型                             | 默认值                            | 说明                                                                     |
+| ------------------------ | -------------------------------- | --------------------------------- | ------------------------------------------------------------------------ |
+| `botId`                  | string                           | -                                 | 智能机器人 id                                                            |
+| `secret`                 | string                           | -                                 | 智能机器人 secret                                                        |
+| `websocketUrl`           | string                           | `wss://openws.work.weixin.qq.com` | 自定义接入地址                                                           |
+| `requireMentionInGroup`  | boolean                          | `true`                            | 群聊里只响应 @ 机器人的消息                                              |
+| `botName`                | string                           | -                                 | 用来校验群聊 @ 的机器人显示名，不配则任意前导 @ 都算                     |
+| `userLabels`             | `Record<string, string>`         | -                                 | 把企业微信 user id 映射成可读名字，用于发言人标识                        |
+| `mentionSender`          | `"markdown" \| "text" \| "none"` | `"markdown"`                      | 群聊回复如何指向提问人，注意下面的限制                                   |
+| `replyProgress`          | `"steps" \| "log"`               | `"steps"`                         | 进度样式：单行随机文案，或逐个工具调用日志                               |
+| `streamAnswer`           | boolean                          | `false`                           | `true` 让答案边生成边写入气泡，`false` 只在收尾帧一次性落地               |
+| `showStepResult`         | boolean                          | `true`                            | 每步完成后是否追加一句状态提示                                           |
+| `stepResultDetail`       | `"status" \| "raw"`              | `"status"`                        | `status` 显示一句短语，`raw` 显示截断后的工具结果                        |
+| `stepHeartbeatMs`        | number                           | `15000`                           | 气泡静止时的刷新间隔，`0` 关闭心跳                                       |
 
-### PI agent config
+### PI agent 配置
 
-| Key          | Type       | Default | Meaning                                                     |
-| ------------ | ---------- | ------- | ----------------------------------------------------------- |
-| `bin`        | string     | `"pi"`  | pi executable                                               |
-| `sessionDir` | string     | -       | Where pi stores session files                               |
-| `model`      | string     | -       | `provider/modelId`, optionally with `:<thinking>` shorthand |
-| `extraArgs`  | `string[]` | `[]`    | Extra pi flags, for example `["--thinking", "high"]`        |
+| 字段         | 类型       | 默认值 | 说明                                                      |
+| ------------ | ---------- | ------ | --------------------------------------------------------- |
+| `bin`        | string     | `"pi"` | pi 可执行文件                                             |
+| `sessionDir` | string     | -      | pi 存放会话文件的目录                                     |
+| `model`      | string     | -      | `provider/modelId`，也可写成 `provider/modelId:high` 简写 |
+| `extraArgs`  | `string[]` | `[]`   | 追加给 pi 的启动参数，例如 `["--thinking", "high"]`       |
 
-### Defaults
+### defaults
 
-| Key                            | Type                              | Meaning                                                                 |
-| ------------------------------ | --------------------------------- | ----------------------------------------------------------------------- |
-| `agentIdleTimeoutMs`           | number                            | Idle time before a session's agent process is released                  |
-| `allowedWorkingDirectoryRoots` | `string[]`                        | Allowlist for `/new <path>`; unset means permissive                      |
-| `messageTimestamp`             | `{timeZone} \| true \| false`     | Prefix inbound text with its arrival time                                |
-| `streaming`                    | boolean                           | `false` forces one completed message per turn and drops delta frames     |
+| 字段                           | 类型                          | 说明                                               |
+| ------------------------------ | ----------------------------- | -------------------------------------------------- |
+| `agentIdleTimeoutMs`           | number                        | 会话空闲多久后释放 agent 进程                      |
+| `allowedWorkingDirectoryRoots` | `string[]`                    | `/new <path>` 的目录白名单，不配表示不限制         |
+| `messageTimestamp`             | `{timeZone} \| true \| false` | 在入站文本前加一行到达时间                         |
+| `streaming`                    | boolean                       | `false` 时每轮只发一条完整消息，不再转发增量帧     |
 
-## WeCom channel behaviour
+## WeCom 通道行为
 
-### One run, one bubble
+### 一次运行一个气泡
 
-Each inbound message opens a single streamed reply bubble. A follow-up that arrives while the agent is still working steers the active run instead of opening a second bubble, and the bubble says so. The bubble is closed on `agent_settled`, never on `agent_end`, because pi may still retry, compact or accept steering after `agent_end`.
+每条入站消息打开一条流式气泡。如果 agent 还在处理时又来一条消息，这条消息会并入当前运行而不是再开一条气泡，气泡里会说明这一点。气泡在 `agent_settled` 关闭，不在 `agent_end` 关闭，因为 pi 在 `agent_end` 之后仍可能重试、压缩或接受新指令。
 
-### Step line
+### 步骤文案
 
-While the agent works the bubble shows one line, drawn from a pool of 70 programmer-flavored phrases and pinned for the duration of that tool call, so `running` / `update` / `done` events do not reshuffle it. Tool names, command lines, arguments and results never reach the chat. With `replyProgress: "log"` the older per-tool lines come back.
+agent 工作期间气泡只显示一行，从 70 条程序员风文案里随机抽取，并按工具调用固定下来，所以 `running`、`update`、`done` 事件不会来回换字。工具名、命令行、参数和结果都不会出现在聊天里。配置 `replyProgress: "log"` 可以回到逐个工具的日志样式。
 
-When a step finishes, `showStepResult` adds one short status note under the line. `stepResultDetail: "raw"` swaps that note for a truncated excerpt of the tool result.
+一步完成后，`showStepResult` 会在下面追加一句状态提示。`stepResultDetail: "raw"` 则改为显示截断后的工具结果摘要。
 
-A frame whose body has not changed is skipped entirely: those frames would only repaint the same text.
+正文与上一帧完全相同的帧会被直接跳过，那些帧只会重绘同样的文字。
 
-### Heartbeat
+### 心跳
 
-A long step refreshes the line with a rotating dot every `stepHeartbeatMs` (15s by default). Every stream frame rewrites the whole body and the client repaints on each one, so the cadence trades "looks alive" against visible flicker. `0` disables it.
+长时间的单步会每隔 `stepHeartbeatMs` 给文案加一个轮转的点，默认 15 秒。每一帧都是整条正文重写，客户端每次都会重绘，所以这个间隔是在「看起来还活着」和「看得出闪烁」之间的取舍。设为 `0` 关闭。
 
-### Answer in the closing frame
+### 答案在收尾帧落地
 
-Answer text is withheld while the agent works. The closing frame carries the whole answer and overwrites every step line, so the bubble ends up holding the result and nothing else. Bodies over the 16 KB budget — kept under WeCom's 20 KB per-frame limit — hold the head in the bubble and deliver the remainder as follow-up messages.
+agent 工作期间答案不会流出。收尾帧携带完整答案并覆盖所有步骤文案，气泡最后只剩结果。正文超过 16KB 预算时，前半段留在气泡，剩余部分作为后续消息发出。这个 16KB 是给企业微信 20KB 单帧上限留的余量。
 
-If the server already closed the stream (its 10 minute cap), the bridge reopens a fresh bubble for the same message and puts the answer there instead of falling back to a second chat message.
+如果服务端已经关闭了流，通常是 10 分钟上限，bridge 会为同一条消息重开一条气泡把答案放进去，而不是退回成第二条聊天消息。
 
-### Groups: mentions and speakers
+### 群聊：@ 与发言人
 
-Set `botName` to the bot's display name. A mention then only counts when it names that bot, and a parenthesized alias is ignored, so both `@瓦达西(Vaddasi)` and `@瓦达西` match. Without `botName`, any leading `@` counts, which is the pre-existing behaviour. Every leading `@name` is stripped from the prompt either way.
+把 `botName` 配成机器人的显示名。这样只有点名该机器人的 @ 才算提及，括号里的别名会被忽略，所以 `@瓦达西(Vaddasi)` 和 `@瓦达西` 都能命中。不配 `botName` 时任意前导 `@` 都算，这是原有行为。两种情况都会把所有前导 `@name` 从 prompt 里剥掉。
 
-Group prompts carry a speaker line so the agent knows who is asking:
+群聊的 prompt 会带发言人标识，让 agent 知道是谁在问：
 
 ```
 [speaker: u-2]
-[quoted: the previous error log]
+[quoted: 上一版的报错日志]
 这个怎么办
 ```
 
-WeCom never sends a display name, so `userLabels` maps ids to readable names; unmapped ids pass through. Direct messages get no speaker line.
+企业微信不下发姓名，所以 `userLabels` 用来把 id 映射成可读名字，没映射的直接用 id。私聊不加这一行。
 
-### Quoted messages
+### 引用消息
 
-When a user quotes another message before asking, WeCom ships it as `body.quote`. Its text is flattened onto one line and prefixed as `[quoted: ...]` so the agent can answer about the cited message. Image, file and voice quotes are labelled (`[image]`, `[file]`, `[voice]`) rather than downloaded.
+用户引用一条消息再提问时，企业微信会把它放在 `body.quote` 里。引用文本会被压成一行并以 `[quoted: ...]` 前缀注入 prompt，agent 就能针对被引用的内容回答。图片、文件、语音引用只做标注，即 `[image]`、`[file]`、`[voice]`，不会下载。
 
-### Pointing at the asker
+### 回复点名
 
-`mentionSender` prepends a mention to a group reply: `markdown` uses `<@userid>`, `text` uses a literal `@label`, `none` disables it.
+`mentionSender` 决定群聊回复开头是否指向提问人：`markdown` 用 `<@userid>`，`text` 用字面的 `@名字`，`none` 不加。
 
-Caveat: WeCom's `<@userid>` syntax is documented for bot text/markdown messages, and smart-robot **stream** frames do not resolve it — the string is shown verbatim. If you see raw `<@…>` in a reply, set `mentionSender` to `text` or `none`.
+限制要说清楚：企业微信的 `<@userid>` 语法只在机器人文本和 markdown 消息里生效，智能机器人的流式帧不会解析它，会原样显示成文本。如果在回复里看到裸露的 `<@…>`，把 `mentionSender` 改成 `text` 或 `none`。
 
-### Attachments
+### 附件
 
-Images and files sent to the bot are downloaded into the OS temp directory (`<tmp>/agent-bridge-wecom-media`), capped at 20 MB per file, and referenced in the prompt by path. Files older than 7 days are pruned on connect and at most once an hour afterwards.
+发给机器人的图片和文件会下载到系统临时目录 `<tmp>/agent-bridge-wecom-media`，单个文件上限 20MB，prompt 里以路径引用。超过 7 天的文件会在连接时清理一次，之后最多每小时检查一次。
 
-### Welcome reply
+### 欢迎语
 
-WeCom sends an `enter_chat` event every time someone opens the bot conversation. The client answers with a random line from a fixed pool (`WECOM_WELCOME_REPLIES` in `src/modules/client/wecom/adapter/wecom-client.ts`), which keeps the bot from repeating one canned greeting all day. Editing the pool means editing that array and rebuilding.
+每次有人打开机器人会话，企业微信都会发一个 `enter_chat` 事件。客户端从固定池里随机回一句，池子定义在 `src/modules/client/wecom/adapter/wecom-client.ts` 的 `WECOM_WELCOME_REPLIES`，避免一整天重复同一句问候。改池子要改这段数组并重新构建。
 
-### Bounded state
+### 有界状态
 
-Reply and stream contexts are kept for the most recent 500 message ids, and processed message ids for the most recent 500 callbacks. Anything older is only needed by a retry that will never come.
+回复上下文和流上下文只保留最近 500 条消息 id，已处理的消息 id 同样只保留 500 条。更早的数据只有永远不会到来的重试才需要。
 
-## Slash commands
+## 斜杠命令
 
-Handled locally, without touching the agent:
+在适配器本地处理，不触碰 agent：
 
-| Command | Meaning |
-| ------- | ------- |
-| `/help` `/h` | Show the command list |
-| `/think` | Invalid or missing level: answer with usage only, no bubble, no session |
-| `/schedule-run <name>` | Fire a scheduled task once, delivering to its bound chat |
-| `/schedule-here <name>` | Bind this chat as that task's result destination |
-| `/queue-here <name>` | Bind this chat as a queue's result destination |
+| 命令 | 说明 |
+| ---- | ---- |
+| `/help` `/h` | 显示命令列表 |
+| `/think` | 级别非法或缺失，只回用法，不开气泡也不建会话 |
+| `/schedule-run <任务名>` | 立即触发一次定时任务，结果发到它绑定的聊天 |
+| `/schedule-here <任务名>` | 把当前聊天设为该任务的接收目标 |
+| `/queue-here <队列名>` | 把当前聊天设为该队列的接收目标 |
 
-Handled by the core, requires an existing session:
+交给核心处理，需要已有会话：
 
-| Command | Meaning |
-| ------- | ------- |
-| `/status` `/st` | Session id, model, thinking level, context usage |
-| `/model` `/m` | List models, or `/model provider/modelId` to switch |
-| `/think <level>` | Switch the thinking level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
-| `/compact` `/c` | Compact the session context |
-| `/stop` `/s` | Abort the current turn |
+| 命令 | 说明 |
+| ---- | ---- |
+| `/status` `/st` | 会话 id、模型、思考强度、上下文用量 |
+| `/model` `/m` | 列出模型，或用 `/model provider/modelId` 切换 |
+| `/think <级别>` | 切换思考强度：`off`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max` |
+| `/compact` `/c` | 压缩当前会话上下文 |
+| `/stop` `/s` | 中止当前这一轮 |
 
-Session lifecycle:
+会话生命周期：
 
-| Command | Meaning |
-| ------- | ------- |
-| `/new [path]` `/n [path]` | Start a new session, optionally in a given directory |
-| `/resume <id>` `/r <id>` | Adopt an existing provider session |
+| 命令 | 说明 |
+| ---- | ---- |
+| `/new [path]` `/n [path]` | 开新会话，可指定工作目录 |
+| `/resume <id>` `/r <id>` | 接管一个已有的 provider 会话 |
 
-`/status`, `/model`, `/think <level>`, `/compact` and `/stop` need a session to exist; in a fresh chat they answer that switching is unavailable rather than starting an agent process.
+`/status`、`/model`、`/think <级别>`、`/compact`、`/stop` 需要会话已经存在。在新聊天里直接发这些命令只会得到「暂时无法切换」之类的回复，不会为此拉起 agent 进程。
 
-## Thinking level
+## 思考强度
 
-pi accepts `--thinking` (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) and the `provider/model:level` shorthand. Set the startup level through `agent.config.extraArgs`, and switch it on a live session with `/think`. Runtime switches do not survive a restart.
+pi 支持 `--thinking`，可选值是 `off`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`，也支持 `provider/model:级别` 的简写。启动级别通过 `agent.config.extraArgs` 设置，运行中的会话用 `/think` 切换。运行时切换不会在重启后保留。
 
-## Logging
+## 日志
 
-The process logs at `info` by default. Per-event chatter — every SDK frame, every inbound message, every forwarded tool event — is logged at `debug`. Set `LOG_LEVEL=debug` in the service environment when that trace is needed.
+默认 `info` 级别。逐事件的细节，包括每个 SDK 帧、每条入站消息、每个转发的工具事件，都降到了 `debug`。需要这些信息时给服务加上 `LOG_LEVEL=debug`。
 
-On a systemd host, rotate `/root/.config/agent-bridge/*.log` weekly or at 20 MB, keeping four compressed rotations. `copytruncate` is required because systemd holds the log open in append mode.
+在 systemd 主机上，按周或按 20MB 轮转 `/root/.config/agent-bridge/*.log`，保留四份压缩历史。必须使用 `copytruncate`，因为 systemd 以追加方式持有该文件。
 
-## Development
+## 开发
 
 ```bash
 npm install
@@ -248,15 +248,15 @@ npm test
 npm run dev -- --help
 ```
 
-`npm run build` bundles `src/` into `dist/agent-bridge.js` with tsup. The test suite runs on vitest.
+`npm run build` 用 tsup 把 `src/` 打包成 `dist/agent-bridge.js`。测试跑在 vitest 上。
 
-Layout:
+目录：
 
-- `src/core/` — gateway core: session lifecycle, command routing, event fan-out
-- `src/modules/client/` — IM adapters (`wecom`, `weixin`, `feishu`) and shared progress rendering
-- `src/modules/agent/` — agent adapters (`pi-coding-agent`, `opencode`)
-- `src/modules/queue/`, `src/modules/schedule/` — queues and scheduled tasks
-- `src/i18n/` — zh-CN / en-US strings for progress lines and command replies
+- `src/core/` 核心网关：会话生命周期、命令路由、事件分发
+- `src/modules/client/` IM 适配器，含 `wecom`、`weixin`、`feishu` 和共享的进度渲染
+- `src/modules/agent/` agent 适配器，含 `pi-coding-agent`、`opencode`
+- `src/modules/queue/`、`src/modules/schedule/` 队列与定时任务
+- `src/i18n/` 进度文案和命令回复的 zh-CN / en-US 资源
 
 ## License
 
