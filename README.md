@@ -1,12 +1,13 @@
 # agent-bridge
 
-[![npm version](https://img.shields.io/npm/v/%40hopgoldy%2Fagent-bridge?style=flat-square&logo=npm)](https://www.npmjs.com/package/@hopgoldy/agent-bridge)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D22-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f?style=flat-square)](#license)
 
 `agent-bridge` 用双适配器架构把 IM 通道和企业微信、微信、飞书接到本地编码 agent 和 pi、OpenCode 之间。一个适配器对接聊天平台，一个驱动 agent 进程，中间的核心只负责转发消息。没有 harness 层，没有额外工具，没有额外技能。
 
 这个 fork 保留原有架构，并在 WeCom 上做得更深：单条气泡原地刷新、群聊发言人识别、引用消息上下文、附件清理、运行时调整思考强度。
+
+> 只从源码构建安装。npm 上的 `@hopgoldy/agent-bridge` 是上游原版，不含本仓库的 WeCom 改动。
 
 ## 支持的平台
 
@@ -25,16 +26,38 @@ Agent：
 | PI Coding Agent | 支持   | 支持 | 支持 | 支持     | 支持     |
 | OpenCode        | 支持   | 支持 | 支持 | 支持     | -        |
 
+## 安装
+
+前置条件：Node.js 22 以上，以及要对接的 agent 可执行文件，例如 `pi` 在 PATH 里。
+
+```bash
+git clone https://github.com/zevin-zh/agent-im-bridge.git
+cd agent-im-bridge
+npm install
+npm run build
+npm install -g .
+```
+
+`npm install -g .` 把本地构建产物装成全局命令。不想污染全局环境的话，直接用 `node dist/agent-bridge.js <子命令>`，下面所有 `agent-bridge` 命令都等价替换。
+
+升级：
+
+```bash
+git pull
+npm install
+npm run build
+npm install -g .
+```
+
 ## 快速开始
 
 ```bash
-npm install -g @hopgoldy/agent-bridge
 agent-bridge add          # 交互式创建通道
 agent-bridge start wecom  # 启动刚创建的通道
 agent-bridge ls           # 列出已配置的通道
 ```
 
-`agent-bridge add` 会依次询问通道名、客户端类型及其配置、agent 类型及其配置，结果写入 `~/.config/agent-bridge/config.json`。
+`agent-bridge add` 会依次询问通道名、客户端类型及其配置、agent 类型及其配置，结果写入 `~/.config/agent-bridge/config.json`。进程是前台运行的，常驻需要 systemd、pm2 或容器重启策略。
 
 ## 命令行
 
