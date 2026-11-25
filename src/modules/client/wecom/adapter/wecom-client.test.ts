@@ -731,4 +731,53 @@ describe("WecomClient", () => {
     const mediaMessage = onMessage.mock.calls[1]?.[0] as { quotedText?: string };
     expect(mediaMessage.quotedText).toBe("[image]");
   });
+
+  it("downloads media items carried inside a mixed message", async () => {
+    const client = new WecomClient(
+      {
+        botId: "bot-id",
+        secret: "secret",
+        requireMentionInGroup: true,
+      },
+      createLogger("test"),
+    );
+    const onMessage = vi.fn(async () => {});
+    client.setOnMessage(onMessage);
+    const connecting = client.connect();
+    latestClient().emit("authenticated");
+    await connecting;
+    const sdkClient = latestClient();
+
+    sdkClient.downloadFile.mockResolvedValueOnce({
+      buffer: Buffer.from("image-bytes"),
+      filename: "shot.png",
+    });
+
+    sdkClient.emit("message.mixed", {
+      headers: { req_id: "req-mixed-1" },
+      body: {
+        msgid: "msg-mixed-1",
+        chatid: "group_1",
+        chattype: "group",
+        from: { userid: "u-2" },
+        msgtype: "mixed",
+        mixed: {
+          msg_item: [
+            { msgtype: "text", text: { content: "@Bot 看下这张图" } },
+            { msgtype: "image", image: { url: "https://example.com/shot.png", aeskey: "k1" } },
+          ],
+        },
+      },
+    } satisfies MockFrame);
+
+    await waitFor(() => onMessage.mock.calls.length === 1);
+    const message = onMessage.mock.calls[0]?.[0] as { text: string };
+    expect(message.text).toContain("看下这张图");
+
+    const match = message.text.match(/\[Received image: (.+)\]/);
+    expect(match?.[1]).toBeTruthy();
+    expect(existsSync(match![1]!)).toBe(true);
+    rmSync(match![1]!, { force: true });
+    expect(sdkClient.downloadFile).toHaveBeenCalledWith("https://example.com/shot.png", "k1");
+  });
 });

@@ -128,6 +128,35 @@ function mentionKey(name: string): string {
     .toLowerCase();
 }
 
+/**
+ * Builds a media reference from a payload shape shared by top-level image/file
+ * messages and by the individual items of a mixed message.
+ */
+function pushMediaRef(
+  refs: MediaRef[],
+  kind: "image" | "file",
+  payload: Record<string, any> | undefined,
+  fallbackFileName?: unknown,
+): void {
+  if (!payload || typeof payload !== "object") {
+    return;
+  }
+  const stringField = (value: unknown): string | undefined =>
+    typeof value === "string" && value.trim().length > 0 ? value : undefined;
+  const url = stringField(payload.url);
+  const base64 = stringField(payload.base64);
+  if (!url && !base64) {
+    return;
+  }
+  refs.push({
+    kind,
+    url,
+    aeskey: stringField(payload.aeskey),
+    base64,
+    fileName: stringField(payload.filename) ?? stringField(payload.name) ?? stringField(fallbackFileName),
+  });
+}
+
 function sanitizeFileName(fileName: string): string {
   return fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
@@ -692,43 +721,28 @@ export class WecomClient {
     const msgType = String(body.msgtype ?? "").toLowerCase();
 
     if (msgType === "image" && body.image) {
-      refs.push({
-        kind: "image",
-        url: typeof body.image.url === "string" ? body.image.url : undefined,
-        aeskey: typeof body.image.aeskey === "string" ? body.image.aeskey : undefined,
-        base64: typeof body.image.base64 === "string" ? body.image.base64 : undefined,
-        fileName: typeof body.image.filename === "string" ? body.image.filename : undefined,
-      });
+      pushMediaRef(refs, "image", body.image);
     }
-
     if (msgType === "file" && body.file) {
-      refs.push({
-        kind: "file",
-        url: typeof body.file.url === "string" ? body.file.url : undefined,
-        aeskey: typeof body.file.aeskey === "string" ? body.file.aeskey : undefined,
-        base64: typeof body.file.base64 === "string" ? body.file.base64 : undefined,
-        fileName:
-          typeof body.file.filename === "string"
-            ? body.file.filename
-            : typeof body.file.name === "string"
-              ? body.file.name
-              : undefined,
-      });
+      pushMediaRef(refs, "file", body.file);
+    }
+    if (msgType === "appmsg" && body.appmsg?.file) {
+      pushMediaRef(refs, "file", body.appmsg.file, body.appmsg.title);
     }
 
-    if (msgType === "appmsg" && body.appmsg?.file) {
-      refs.push({
-        kind: "file",
-        url: typeof body.appmsg.file.url === "string" ? body.appmsg.file.url : undefined,
-        aeskey: typeof body.appmsg.file.aeskey === "string" ? body.appmsg.file.aeskey : undefined,
-        base64: typeof body.appmsg.file.base64 === "string" ? body.appmsg.file.base64 : undefined,
-        fileName:
-          typeof body.appmsg.file.filename === "string"
-            ? body.appmsg.file.filename
-            : typeof body.appmsg.title === "string"
-              ? body.appmsg.title
-              : undefined,
-      });
+    // A mixed message carries several items in one frame; media inside it would
+    // otherwise be dropped while only its text survives.
+    if (msgType === "mixed") {
+      const items = Array.isArray(body.mixed?.msg_item) ? body.mixed.msg_item : [];
+      for (const item of items) {
+        const itemType = String(item?.msgtype ?? "").toLowerCase();
+        if (itemType === "image" && item.image) {
+          pushMediaRef(refs, "image", item.image);
+        }
+        if (itemType === "file" && item.file) {
+          pushMediaRef(refs, "file", item.file);
+        }
+      }
     }
 
     return refs;
