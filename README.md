@@ -136,7 +136,7 @@ agent-bridge ls           # 列出已配置的通道
 | `requireMentionInGroup`  | boolean                          | `true`                            | 群聊里只响应 @ 机器人的消息                                              |
 | `botName`                | string                           | -                                 | 用来校验群聊 @ 的机器人显示名，不配则任意前导 @ 都算                     |
 | `userLabels`             | `Record<string, string>`         | -                                 | 把企业微信 user id 映射成可读名字，用于发言人标识                        |
-| `mentionSender`          | `"markdown" \| "text" \| "none"` | `"markdown"`                      | 群聊回复如何指向提问人，注意下面的限制                                   |
+| `mentionSender`          | `"none" \| "text" \| "markdown"` | `"none"`                          | 群聊回复如何指向提问人；`markdown` 在智能机器人流式帧上无效，见下文       |
 | `replyProgress`          | `"steps" \| "log"`               | `"steps"`                         | 进度样式：单行随机文案，或逐个工具调用日志                               |
 | `streamAnswer`           | boolean                          | `false`                           | `true` 让答案边生成边写入气泡，`false` 只在收尾帧一次性落地               |
 | `showStepResult`         | boolean                          | `true`                            | 每步完成后是否追加一句状态提示                                           |
@@ -205,9 +205,13 @@ agent 工作期间答案不会流出。收尾帧携带完整答案并覆盖所�
 
 ### 回复点名
 
-`mentionSender` 决定群聊回复开头是否指向提问人：`markdown` 用 `<@userid>`，`text` 用字面的 `@名字`，`none` 不加。
+这一项目前只有纯文本一种可靠形式，默认关闭。
 
-限制要说清楚：企业微信的 `<@userid>` 语法只在机器人文本和 markdown 消息里生效，智能机器人的流式帧不会解析它，会原样显示成文本。如果在回复里看到裸露的 `<@…>`，把 `mentionSender` 改成 `text` 或 `none`。
+- `none`，默认值，回复不指向任何人
+- `text`，在正文前加一个字面的 `@名字`，名字取 `userLabels` 映射，没映射时显示加密的 userid
+- `markdown`，加 `<@userid>`。企业微信只在这条语法用于机器人 text/markdown 消息时解析它，智能机器人的流式帧会把整串原样显示，实测能在回复里看到裸露的 `<@woaz…>`。因此它不默认开启，保留只为兼容非流式场景
+
+想要「看起来在点名」，用 `text` 并把常用的人写进 `userLabels`。真正触发对方提醒的 @ 在当前流式实现里做不到。
 
 ### 附件
 

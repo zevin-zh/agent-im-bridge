@@ -2052,6 +2052,7 @@ describe("WecomIMAdapter", () => {
         botId: "bot-id",
         secret: "secret",
         requireMentionInGroup: true,
+        mentionSender: "markdown",
       },
       createLogger("test"),
     );

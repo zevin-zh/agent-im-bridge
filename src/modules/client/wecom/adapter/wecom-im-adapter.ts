@@ -1054,7 +1054,7 @@ export class WecomIMAdapter implements IMAdapter {
    * mention syntax; `text` falls back to a literal @label, `none` disables it.
    */
   #senderMention(state: ProgressState): string {
-    const mode = this.#config.mentionSender ?? "markdown";
+    const mode = this.#config.mentionSender ?? "none";
     if (mode === "none" || !state.senderId || state.chatType !== "group") {
       return "";
     }

@@ -532,10 +532,11 @@ export interface WecomClientConfig {
   /**
    * How a group reply points back at whoever asked.
    *
-   * - `markdown` (default): prepend `<@userid>`, the mention syntax WeCom
-   *   renders as a real @ in markdown messages.
+   * - `none` (default): no mention at all.
    * - `text`: prepend a plain `@label`, which always displays literally.
-   * - `none`: no mention at all.
+   * - `markdown`: prepend `<@userid>`. WeCom only resolves that syntax in bot
+   *   text/markdown messages; smart-robot stream frames render it verbatim, so
+   *   this mode is kept for compatibility and is off by default.
    */
   mentionSender?: "markdown" | "text" | "none";
 }
