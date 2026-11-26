@@ -532,13 +532,12 @@ export interface WecomClientConfig {
   /**
    * Whether inbound images are handed to the agent as files.
    *
-   * - `none` (default): only an `[image]` placeholder is injected. The agent
-   *   cannot open the picture, which is the correct behaviour for text-only
-   *   models — sending image bytes to one fails with "not a multimodal model".
-   * - `path`: download the image and put its local path in the prompt. Only
-   *   turn this on when the configured model accepts image input.
+   * - `path` (default): download the image and put its local path in the prompt,
+   *   so a vision-capable model can look at it.
+   * - `none`: only inject an `[image]` placeholder. Use this when the configured
+   *   model is text-only; feeding it image bytes fails with a 400.
    */
-  imageInput?: "none" | "path";
+  imageInput?: "path" | "none";
   /** Test hook: deterministic source for the random step lines. */
   stepRandom?: () => number;
   /**

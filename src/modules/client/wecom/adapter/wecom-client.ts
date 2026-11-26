@@ -596,9 +596,9 @@ export class WecomClient {
 
     const refs = this.#extractMediaRefs(body);
     for (const ref of refs) {
-      if (this.#isImageRef(ref) && this.#config.imageInput !== "path") {
-        // Text-only models reject image bytes outright, so the agent only learns
-        // that a picture was sent. Set `imageInput: "path"` for vision models.
+      if (this.#isImageRef(ref) && this.#config.imageInput === "none") {
+        // Opt-in downgrade for text-only models: they reject image bytes with a
+        // 400, so the agent is told a picture exists but cannot open it.
         textParts.push("[image]");
         continue;
       }

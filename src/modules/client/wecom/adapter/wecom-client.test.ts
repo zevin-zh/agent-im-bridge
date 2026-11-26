@@ -296,7 +296,6 @@ describe("WecomClient", () => {
       {
         botId: "bot-id",
         secret: "secret",
-        imageInput: "path",
       },
       createLogger("test"),
     );
@@ -741,7 +740,6 @@ describe("WecomClient", () => {
         botId: "bot-id",
         secret: "secret",
         requireMentionInGroup: true,
-        imageInput: "path",
       },
       createLogger("test"),
     );
@@ -785,11 +783,12 @@ describe("WecomClient", () => {
     expect(sdkClient.downloadFile).toHaveBeenCalledWith("https://example.com/shot.png", "k1");
   });
 
-  it("refuses to hand images to a text-only model by default", async () => {
+  it("can downgrade images to a placeholder for a text-only model", async () => {
     const client = new WecomClient(
       {
         botId: "bot-id",
         secret: "secret",
+        imageInput: "none",
       },
       createLogger("test"),
     );
