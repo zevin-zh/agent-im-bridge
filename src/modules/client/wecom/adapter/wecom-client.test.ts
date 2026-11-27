@@ -821,4 +821,31 @@ describe("WecomClient", () => {
     expect(message.text).not.toContain("[Received image:");
     expect(sdkClient.downloadFile).not.toHaveBeenCalled();
   });
+
+  it("takes the process down when the SDK gives up reconnecting", async () => {
+    const onFatal = vi.fn();
+    const client = new WecomClient(
+      {
+        botId: "bot-id",
+        secret: "secret",
+      },
+      createLogger("test"),
+      { onFatal },
+    );
+    const connecting = client.connect();
+    latestClient().emit("authenticated");
+    await connecting;
+
+    const sdkClient = latestClient();
+    const exhausted = Object.assign(new Error("Max reconnect attempts exceeded (10)"), {
+      name: "WSReconnectExhaustedError",
+    });
+    sdkClient.emit("error", exhausted);
+
+    expect(onFatal).toHaveBeenCalledTimes(1);
+
+    // Ordinary errors must not take the process down.
+    sdkClient.emit("error", new Error("temporary hiccup"));
+    expect(onFatal).toHaveBeenCalledTimes(1);
+  });
 });

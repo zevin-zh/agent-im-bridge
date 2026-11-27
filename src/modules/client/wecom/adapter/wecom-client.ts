@@ -15,6 +15,8 @@ const MAX_MEDIA_BYTES = 20 * 1024 * 1024;
 const MEDIA_TEMP_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 /** Don't walk the media directory on every download. */
 const MEDIA_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
+/** Ceiling for the whole temp directory; the oldest files go first. */
+const MAX_MEDIA_TOTAL_BYTES = 256 * 1024 * 1024;
 const IMAGE_SIGNATURE_PNG = Buffer.from("89504e470d0a1a0a", "hex");
 const IMAGE_SIGNATURE_JPG = Buffer.from("ffd8ff", "hex");
 // The WeCom docs designate body.msgid as the dedup key for inbound callbacks.
@@ -194,6 +196,7 @@ export class WecomClient {
   #onKicked: (() => void) | null = null;
   #client: SdkClientLike | null = null;
   #kicked = false;
+  readonly #onFatal: (error: Error) => void;
   #processedMessageIds = new Set<string>();
   #mediaPrunedAt = 0;
   #replyReqIdByMessageId = new Map<string, string>();
@@ -203,9 +206,20 @@ export class WecomClient {
   #streamContextByMessageId = new Map<string, StreamContext>();
   #lastStreamContextByChatId = new Map<string, StreamContext>();
 
-  constructor(config: WecomClientConfig, logger: Logger = createLogger("wecom")) {
+  constructor(
+    config: WecomClientConfig,
+    logger: Logger = createLogger("wecom"),
+    options: { onFatal?: (error: Error) => void } = {},
+  ) {
     this.#config = config;
     this.#logger = logger;
+    this.#onFatal =
+      options.onFatal ??
+      (() => {
+        // The channel is unusable at this point; exiting is the only way to get
+        // a fresh connection back, and systemd restarts us.
+        process.exit(1);
+      });
   }
 
   setOnMessage(onMessage: (message: WecomInboundMessage) => Promise<void> | void): void {
@@ -265,6 +279,23 @@ export class WecomClient {
         rejectOnce(error, "connect");
       }
     });
+
+    // The listeners above only settle the connection promise, so anything that
+    // goes wrong later is silent. When the SDK exhausts its reconnect budget the
+    // bot is deaf forever while the process still looks healthy: exit and let
+    // the service manager start a clean one.
+    client.on("error", (error: unknown) => {
+      if ((error as { name?: string } | undefined)?.name === "WSReconnectExhaustedError") {
+        this.#logger.error(
+          "WeCom websocket gave up reconnecting; exiting so the service manager can restart the process",
+        );
+        this.#onFatal(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
+    client.on("reconnecting", (attempt: unknown) => {
+      this.#logger.warn(`WeCom websocket reconnecting (attempt ${String(attempt ?? "?")})`);
+    });
+
     void this.#maybePruneMediaDir();
   }
 
@@ -283,18 +314,40 @@ export class WecomClient {
     try {
       const entries = await readdir(MEDIA_TEMP_DIR);
       const cutoff = now - MEDIA_TEMP_TTL_MS;
+      const survivors: Array<{ path: string; mtimeMs: number; size: number }> = [];
       let removed = 0;
+
       for (const name of entries) {
         const path = join(MEDIA_TEMP_DIR, name);
         const info = await stat(path).catch(() => null);
-        if (!info?.isFile() || info.mtimeMs >= cutoff) {
+        if (!info?.isFile()) {
           continue;
         }
-        await unlink(path).catch(() => undefined);
-        removed += 1;
+        if (info.mtimeMs < cutoff) {
+          await unlink(path).catch(() => undefined);
+          removed += 1;
+          continue;
+        }
+        survivors.push({ path, mtimeMs: info.mtimeMs, size: info.size });
       }
+
+      // Age alone is not enough: a few large attachments inside the TTL can
+      // still fill the disk, so cap the directory and drop the oldest first.
+      let total = survivors.reduce((sum, entry) => sum + entry.size, 0);
+      if (total > MAX_MEDIA_TOTAL_BYTES) {
+        survivors.sort((a, b) => a.mtimeMs - b.mtimeMs);
+        for (const entry of survivors) {
+          if (total <= MAX_MEDIA_TOTAL_BYTES) {
+            break;
+          }
+          await unlink(entry.path).catch(() => undefined);
+          total -= entry.size;
+          removed += 1;
+        }
+      }
+
       if (removed > 0) {
-        this.#logger.info(`pruned ${removed} stale attachment(s) from ${MEDIA_TEMP_DIR}`);
+        this.#logger.info(`pruned ${removed} attachment(s) from ${MEDIA_TEMP_DIR}`);
       }
     } catch (error) {
       this.#logger.debug("failed to prune the media directory:", error);

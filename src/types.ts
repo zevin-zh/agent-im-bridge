@@ -564,6 +564,12 @@ export interface PiCodingAgentConfig {
   sessionDir?: string;
   model?: string;
   extraArgs?: string[];
+  /**
+   * Delete pi session files older than this many days when the adapter starts.
+   * `0` or unset leaves history untouched; history is pi's own record, so this
+   * is opt-in.
+   */
+  sessionRetentionDays?: number;
 }
 
 export interface OpenCodeAgentConfig {

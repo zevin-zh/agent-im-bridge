@@ -1,4 +1,5 @@
-import { realpath } from "node:fs/promises";
+import { join } from "node:path";
+import { readdir, realpath, rm, stat } from "node:fs/promises";
 import type {
   AgentAdapter,
   AgentAvailableModel,
@@ -78,6 +79,8 @@ export interface PiCodingAgentAdapterOptions {
    */
   allowedWorkingDirectoryRoots?: string[];
   sessionDir?: string;
+  /** Delete session files older than this many days on start. 0 disables. */
+  sessionRetentionDays?: number;
   bin?: string;
   model?: string;
   extraArgs?: string[];
@@ -153,6 +156,7 @@ export class PiCodingAgentAdapter implements AgentAdapter {
     | { mode: "create"; sessionState: NewAgentSessionStateApi<PiCodingAgentSessionStateV1> }
     | { mode: "resume"; sessionState: AgentSessionStateApi<PiCodingAgentSessionStateV1> };
   readonly #sessionDir?: string;
+  readonly #sessionRetentionDays: number;
   readonly #bin: string;
   readonly #model?: string;
   readonly #extraArgs: string[];
@@ -214,6 +218,7 @@ export class PiCodingAgentAdapter implements AgentAdapter {
     this.#workingDirectorySource = options.workingDirectorySource;
     this.#allowedWorkingDirectoryRoots = options.allowedWorkingDirectoryRoots;
     this.#sessionDir = options.sessionDir;
+    this.#sessionRetentionDays = options.sessionRetentionDays ?? 0;
     this.#bin = options.bin ?? "pi";
     this.#model = options.model;
     this.#extraArgs = options.extraArgs ?? [];
@@ -229,6 +234,7 @@ export class PiCodingAgentAdapter implements AgentAdapter {
     // never reach the process spawn step.
     const cwd = await this.#prepareWorkingDirectory();
     this.#resolvedWorkingDirectory = cwd;
+    await this.#pruneOldSessions();
 
     this.#client = new PiRpcClient({
       agentSessionId: this.#agentSessionId,
@@ -405,6 +411,40 @@ export class PiCodingAgentAdapter implements AgentAdapter {
     }
     await this.#client.setThinkingLevel(level);
     return level;
+  }
+
+  /**
+   * Drops pi session files older than the configured retention window. Off by
+   * default: history belongs to pi, and a bridge restart is not a good reason to
+   * throw it away.
+   */
+  async #pruneOldSessions(): Promise<void> {
+    const days = this.#sessionRetentionDays;
+    if (days <= 0 || this.#sessionDir === undefined) {
+      return;
+    }
+    const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+    try {
+      const entries = await readdir(this.#sessionDir);
+      let removed = 0;
+      for (const name of entries) {
+        if (!name.endsWith(".jsonl") && !name.endsWith(".jsonl.acp.json")) {
+          continue;
+        }
+        const filePath = join(this.#sessionDir, name);
+        const info = await stat(filePath).catch(() => null);
+        if (!info?.isFile() || info.mtimeMs >= cutoff) {
+          continue;
+        }
+        await rm(filePath, { force: true }).catch(() => undefined);
+        removed += 1;
+      }
+      if (removed > 0) {
+        this.#logger.info(`pruned ${removed} session file(s) older than ${days} days`);
+      }
+    } catch (error) {
+      this.#logger.debug("failed to prune old session files:", error);
+    }
   }
 
   async getStatus(): Promise<AgentSessionStatus> {

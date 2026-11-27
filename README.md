@@ -152,6 +152,7 @@ agent-bridge ls           # 列出已配置的通道
 | `sessionDir` | string     | -      | pi 存放会话文件的目录                                     |
 | `model`      | string     | -      | `provider/modelId`，也可写成 `provider/modelId:high` 简写 |
 | `extraArgs`  | `string[]` | `[]`   | 追加给 pi 的启动参数，例如 `["--thinking", "high"]`       |
+| `sessionRetentionDays` | number | `0` | 启动时清理超过该天数的 pi 会话文件；`0` 表示不清理 |
 
 ### defaults
 
@@ -220,6 +221,8 @@ agent 工作期间答案不会流出。收尾帧携带完整答案并覆盖所�
 
 图片能否被理解取决于模型：纯文本模型收到图片字节会返回 400 `not a multimodal model`，这种模型下把 `imageInput` 设为 `none`，bridge 只注入一个 `[image]` 占位。
 
+临时目录同时有总量上限 256MB，超过时按修改时间删除最旧的文件。
+
 企业微信里「先发文件再补一句话」是两条独立消息，不是一条混排。只有附件、没有文字的消息会先等 3 秒，把随后那句话合并成一条 prompt 再触发，避免为一串路径白跑一轮；窗口内没有文字就单独发出。超过 7 天的文件会在连接时清理一次，之后最多每小时检查一次。
 
 ### 欢迎语
@@ -270,6 +273,8 @@ pi 支持 `--thinking`，可选值是 `off`、`minimal`、`low`、`medium`、`hi
 默认 `info` 级别。逐事件的细节，包括每个 SDK 帧、每条入站消息、每个转发的工具事件，都降到了 `debug`。需要这些信息时给服务加上 `LOG_LEVEL=debug`。
 
 在 systemd 主机上，按周或按 20MB 轮转 `/root/.config/agent-bridge/*.log`，保留四份压缩历史。必须使用 `copytruncate`，因为 systemd 以追加方式持有该文件。
+
+WebSocket 断线由 SDK 自动重连，最多 10 次。次数用尽后 bridge 会记录一条 error 并退出进程，交给服务管理器的重启策略重新拉起，避免进程活着但再也收不到消息。
 
 ## 开发
 
